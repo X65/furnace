@@ -75,8 +75,53 @@ enum {
   SGU_REG_SPECIAL2    = 0x1F
 };
 
+const char* regCheatSheetSGU[]={
+  "CHx_OPy_R0 [7 TRM][6 VIB][5 FIX][3:0 MUL]", "00+x*40+y*08",
+  "CHx_OPy_R1 [7:6 KSL][5:0 TL]", "01+x*40+y*08",
+  "CHx_OPy_R2 [7:4 AR][3:0 DR]", "02+x*40+y*08",
+  "CHx_OPy_R3 [7:4 SL][3:0 RR]", "03+x*40+y*08",
+  "CHx_OPy_R4 [7:5 DT][4:0 SR]", "04+x*40+y*08",
+  "CHx_OPy_R5 [7:5 DELAY][4:3 KSR][2:0 WPAR]", "05+x*40+y*08",
+  "CHx_OPy_R6 [7 TRMD][6 VIBD][5 SYNC][4 RING][3:1 MOD][0 TLmsb]", "06+x*40+y*08",
+  "CHx_OPy_R7 [7:5 OUT][4 ARmsb][3 DRmsb][2:0 WAVE]", "07+x*40+y*08",
+
+  "CHx_FREQ_L", "20+x*40",
+  "CHx_FREQ_H", "21+x*40",
+  "CHx_VOL", "22+x*40",
+  "CHx_PAN", "23+x*40",
+  "CHx_FLAGS0", "24+x*40",
+  "CHx_FLAGS1", "25+x*40",
+  "CHx_CUTOFF_L", "26+x*40",
+  "CHx_CUTOFF_H", "27+x*40",
+  "CHx_DUTY", "28+x*40",
+  "CHx_RESON", "29+x*40",
+  "CHx_PCM_POS_L", "2A+x*40",
+  "CHx_PCM_POS_H", "2B+x*40",
+  "CHx_PCM_END_L", "2C+x*40",
+  "CHx_PCM_END_H", "2D+x*40",
+  "CHx_PCM_RST_L", "2E+x*40",
+  "CHx_PCM_RST_H", "2F+x*40",
+  "CHx_SWFREQ_L", "30+x*40",
+  "CHx_SWFREQ_H", "31+x*40",
+  "CHx_SWFREQ_AMT", "32+x*40",
+  "CHx_SWFREQ_BND", "33+x*40",
+  "CHx_SWVOL_L", "34+x*40",
+  "CHx_SWVOL_H", "35+x*40",
+  "CHx_SWVOL_AMT", "36+x*40",
+  "CHx_SWVOL_BND", "37+x*40",
+  "CHx_SWCUT_L", "38+x*40",
+  "CHx_SWCUT_H", "39+x*40",
+  "CHx_SWCUT_AMT", "3A+x*40",
+  "CHx_SWCUT_BND", "3B+x*40",
+  "CHx_RESTIMER_L", "3C+x*40",
+  "CHx_RESTIMER_H", "3D+x*40",
+  "CHx_SPECIAL1", "3E+x*40",
+  "CHx_SPECIAL2", "3F+x*40",
+  NULL
+};
+
 const char** DivPlatformSGU::getRegisterSheet() {
-  return NULL;
+  return regCheatSheetSGU;
 }
 
 void DivPlatformSGU::writeControl(int ch) {
