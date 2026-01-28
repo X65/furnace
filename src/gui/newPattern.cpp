@@ -1324,7 +1324,7 @@ void FurnaceGUI::drawPatternNew() {
                 dl->AddText(pos,ImGui::GetColorU32(uiColors[GUI_COLOR_PATTERN_INS_ERROR]),id,id+2);
               } else {
                 DivInstrumentType t=e->song.ins[pat->newData[row][DIV_PAT_INS]]->type;
-                if (t!=DIV_INS_AMIGA && t!=e->getPreferInsType(i)) {
+                if (!e->channelSupportsInstrumentType(i,t)) {
                   dl->AddText(pos,ImGui::GetColorU32(uiColors[GUI_COLOR_PATTERN_INS_WARN]),id,id+2);
                 } else {
                   dl->AddText(pos,ImGui::GetColorU32(uiColors[GUI_COLOR_PATTERN_INS]),id,id+2);

@@ -3600,7 +3600,7 @@ int DivEngine::getViableChannel(int chan, int off, int ins) {
   // this is a copy of the routine in autoNoteOn...... I am lazy
   DivInstrument* insInst=getIns(ins);
   for (int i=0; i<song.chans; i++) {
-    if (ins==-1 || ins>=song.insLen || getPreferInsType(i)==insInst->type || (getPreferInsType(i)==DIV_INS_NULL && finalChanType==DIV_CH_NOISE) || getPreferInsSecondType(i)==insInst->type) {
+    if (ins==-1 || ins>=song.insLen || channelSupportsInstrumentType(i,insInst->type) || (getPreferInsType(i)==DIV_INS_NULL && finalChanType==DIV_CH_NOISE)) {
       if (insInst->type==DIV_INS_OPL) {
         if (insInst->fm.ops==2 || getChannelType(i)==DIV_CH_OP) {
           isViable[i]=true;
@@ -3667,9 +3667,9 @@ bool DivEngine::autoNoteOn(int ch, int ins, int note, int vol, int transpose) {
 
   // 1. check which channels are viable for this instrument
   DivInstrument* insInst=getIns(ins);
-  if (getPreferInsType(finalChan)!=insInst->type && getPreferInsSecondType(finalChan)!=insInst->type && getPreferInsType(finalChan)!=DIV_INS_NULL) notInViableChannel=true;
+  if (!channelSupportsInstrumentType(finalChan,insInst->type) && getPreferInsType(finalChan)!=DIV_INS_NULL) notInViableChannel=true;
   for (int i=0; i<song.chans; i++) {
-    if (ins==-1 || ins>=song.insLen || getPreferInsType(i)==insInst->type || (getPreferInsType(i)==DIV_INS_NULL && finalChanType==DIV_CH_NOISE) || getPreferInsSecondType(i)==insInst->type) {
+    if (ins==-1 || ins>=song.insLen || channelSupportsInstrumentType(i,insInst->type) || (getPreferInsType(i)==DIV_INS_NULL && finalChanType==DIV_CH_NOISE)) {
       if (insInst->type==DIV_INS_OPL) {
         if (insInst->fm.ops==2 || getChannelType(i)==DIV_CH_OP) {
           isViable[i]=true;
