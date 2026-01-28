@@ -815,6 +815,9 @@ class DivEngine {
     // get alternate instrument type
     DivInstrumentType getPreferInsSecondType(int ch);
 
+    // check whether a channel supports a given instrument type
+    bool channelSupportsInstrumentType(int ch, DivInstrumentType type) const;
+
     // get song system name
     String getSongSystemLegacyName(DivSong& ds, bool isMultiSystemAcceptable=true);
 

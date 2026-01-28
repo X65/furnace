@@ -244,7 +244,7 @@ inline void FurnaceGUI::patternRow(int i, bool isPlaying, float lineHeight, int 
           ImGui::PushStyleColor(ImGuiCol_Text,uiColors[GUI_COLOR_PATTERN_INS_ERROR]);
         } else {
           DivInstrumentType t=e->song.ins[pat->newData[i][DIV_PAT_INS]]->type;
-          if (t!=DIV_INS_AMIGA && t!=e->getPreferInsType(j)) {
+          if (!e->channelSupportsInstrumentType(j,t)) {
             ImGui::PushStyleColor(ImGuiCol_Text,uiColors[GUI_COLOR_PATTERN_INS_WARN]);
           } else {
             ImGui::PushStyleColor(ImGuiCol_Text,uiColors[GUI_COLOR_PATTERN_INS]);
@@ -1956,4 +1956,3 @@ void FurnaceGUI::drawPattern() {
 
   openEditMenu=false;
 }
-

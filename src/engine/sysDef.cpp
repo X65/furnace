@@ -334,14 +334,21 @@ DivInstrumentType DivEngine::getPreferInsType(int chan) {
   if (chan<0 || chan>song.chans) return DIV_INS_STD;
   if (song.dispatchChanOfChan[chan]<0) return DIV_INS_STD;
 
-  return song.chanDef[chan].insType[0];
+  return song.chanDef[chan].getInsType(0);
 }
 
 DivInstrumentType DivEngine::getPreferInsSecondType(int chan) {
   if (chan<0 || chan>song.chans) return DIV_INS_NULL;
   if (song.dispatchChanOfChan[chan]<0) return DIV_INS_NULL;
 
-  return song.chanDef[chan].insType[1];
+  return song.chanDef[chan].getInsType(1);
+}
+
+bool DivEngine::channelSupportsInstrumentType(int chan, DivInstrumentType type) const {
+  if (chan<0 || chan>song.chans) return false;
+  if (song.dispatchChanOfChan[chan]<0) return false;
+  if (type==DIV_INS_NULL) return false;
+  return song.chanDef[chan].supportsInsType(type);
 }
 
 int DivEngine::minVGMVersion(DivSystem which) {
@@ -2257,7 +2264,27 @@ void DivEngine::registerSystems() {
     _("SGU-1"), NULL, 0xd2, 0, 9, 9, 9,
     true, true, 0, false, 1U<<DIV_SAMPLE_DEPTH_8BIT, 0, 0,
     _("an ESFM with SID-like tuning."),
-    DivChanDefFunc(simpleChanDef<DIV_CH_FM,DIV_INS_ESFM,DIV_INS_AMIGA>),
+    DivChanDefFunc([](unsigned short ch) -> DivChanDef {
+      return DivChanDef(
+        fmt::sprintf(_("Channel %d"),ch+1),
+        fmt::sprintf(_("CH%d"),ch+1),
+        DIV_CH_FM,
+        {
+          DIV_INS_ESFM,
+          DIV_INS_FM,
+          DIV_INS_OPM,
+          DIV_INS_OPL,
+          DIV_INS_OPL_DRUMS,
+          DIV_INS_OPLL,
+          DIV_INS_OPZ,
+          DIV_INS_SU,
+          DIV_INS_C64,
+          DIV_INS_SID2,
+          DIV_INS_POKEY,
+          DIV_INS_AMIGA
+        }
+      );
+    }),
     {},
     suEffectHandlerMap
   );

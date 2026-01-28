@@ -347,7 +347,7 @@ void FurnaceGUI::drawSystemChannelInfoText(const DivSysDef* whichDef) {
   // count channel types
   for (int i=0; i<whichDef->channels; i++) {
     DivChanDef chanDef=whichDef->getChanDef(i);
-    switch (chanDef.insType[0]) {
+    switch (chanDef.getInsType(0)) {
       case DIV_INS_STD: // square
       case DIV_INS_BEEPER:
       case DIV_INS_TED:

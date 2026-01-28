@@ -24,6 +24,7 @@
 #include "instrument.h"
 #include <functional>
 #include <initializer_list>
+#include <vector>
 
 typedef int EffectValConversion(unsigned char,unsigned char);
 
@@ -62,20 +63,46 @@ struct DivChanDef {
   String name;
   String shortName;
   int type;
-  // 0: primary
-  // 1: alternate (usually PCM)
-  DivInstrumentType insType[2];
+  // ordered list of supported instrument types (index 0 is the preferred type)
+  std::vector<DivInstrumentType> insTypes;
 
   DivChanDef(const String& n, const String& sn, int t, DivInstrumentType insT, DivInstrumentType insT2=DIV_INS_NULL):
     name(n),
     shortName(sn),
     type(t),
-    insType{insT,insT2} {}
+    insTypes() {
+    if (insT!=DIV_INS_NULL) {
+      insTypes.push_back(insT);
+    }
+    if (insT2!=DIV_INS_NULL) {
+      insTypes.push_back(insT2);
+    }
+  }
+  DivChanDef(const String& n, const String& sn, int t, std::initializer_list<DivInstrumentType> types):
+    name(n),
+    shortName(sn),
+    type(t),
+    insTypes() {
+    for (DivInstrumentType t: types) {
+      if (t!=DIV_INS_NULL) insTypes.push_back(t);
+    }
+  }
   DivChanDef():
     name("??"),
     shortName("??"),
     type(DIV_CH_NOISE),
-    insType{DIV_INS_NULL,DIV_INS_NULL} {}
+    insTypes() {}
+
+  DivInstrumentType getInsType(size_t index) const {
+    if (index>=insTypes.size()) return DIV_INS_NULL;
+    return insTypes[index];
+  }
+  bool supportsInsType(DivInstrumentType type) const {
+    for (DivInstrumentType t: insTypes) {
+      if (t==type) return true;
+    }
+    return false;
+  }
 };
 
 struct DivChanDefFunc {
