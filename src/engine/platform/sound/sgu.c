@@ -345,16 +345,16 @@ static inline uint8_t compute_eg_rate(uint8_t op_data[], uint16_t ch_freq, enum 
     uint32_t rawrate;
     switch (state)
     {
-    case EG_ATTACK:
+    case SGU_EG_ATTACK:
         rawrate = SGU_OP27_AR(op_data[2], op_data[7]) * 2;
         break;
-    case EG_DECAY:
+    case SGU_EG_DECAY:
         rawrate = SGU_OP27_DR(op_data[2], op_data[7]) * 2;
         break;
-    case EG_SUSTAIN:
+    case SGU_EG_SUSTAIN:
         rawrate = SGU_OP4_SR(op_data[4]) * 2;
         break;
-    case EG_RELEASE:
+    case SGU_EG_RELEASE:
     default:
         rawrate = SGU_OP3_RR(op_data[3]) * 4 + 2;
         break;
@@ -440,16 +440,16 @@ static inline int32_t clock_lfo(uint16_t *lfo_am_counter, uint16_t *lfo_pm_count
 static inline void start_attack(struct sgu_ch_state *self, uint8_t op, uint8_t op_data[], uint16_t ch_freq, bool is_restart /*= false*/)
 {
     // don't change anything if already in attack state
-    if (self->envelope_state[op] == EG_ATTACK)
+    if (self->envelope_state[op] == SGU_EG_ATTACK)
         return;
-    self->envelope_state[op] = EG_ATTACK;
+    self->envelope_state[op] = SGU_EG_ATTACK;
 
     // reset the phase when we start an attack due to a key on
     if (!is_restart)
         self->phase[op] = 0;
 
     // if the attack rate >= 62 then immediately go to max attenuation
-    if (compute_eg_rate(op_data, ch_freq, EG_ATTACK) >= 62)
+    if (compute_eg_rate(op_data, ch_freq, SGU_EG_ATTACK) >= 62)
         self->envelope_attenuation[op] = 0;
 }
 
@@ -460,9 +460,9 @@ static inline void start_attack(struct sgu_ch_state *self, uint8_t op, uint8_t o
 static inline void start_release(struct sgu_ch_state *self, uint8_t op)
 {
     // don't change anything if already in release state
-    if (self->envelope_state[op] >= EG_RELEASE)
+    if (self->envelope_state[op] >= SGU_EG_RELEASE)
         return;
-    self->envelope_state[op] = EG_RELEASE;
+    self->envelope_state[op] = SGU_EG_RELEASE;
 }
 
 //-------------------------------------------------
@@ -476,7 +476,7 @@ static void fm_channel_reset(struct sgu_ch_state *self, size_t ch_idx)
         self->phase[op] = 0;
         self->prev_phase[op] = 0;
         self->envelope_attenuation[op] = 0x3ff;
-        self->envelope_state[op] = EG_RELEASE;
+        self->envelope_state[op] = SGU_EG_RELEASE;
         self->key_state[op] = false;
         self->keyon_live[op] = false;
         self->keyon_gate[op] = false;
@@ -508,16 +508,16 @@ static inline void fm_channel_keyonoff(struct sgu_ch_state *self, bool on)
 static inline void clock_envelope(struct sgu_ch_state *self, uint8_t op, uint8_t op_data[], uint16_t ch_freq, uint32_t env_counter)
 {
     // handle attack->decay transitions
-    if (self->envelope_state[op] == EG_ATTACK && self->envelope_attenuation[op] == 0)
-        self->envelope_state[op] = EG_DECAY;
+    if (self->envelope_state[op] == SGU_EG_ATTACK && self->envelope_attenuation[op] == 0)
+        self->envelope_state[op] = SGU_EG_DECAY;
 
     // handle decay->sustain transitions; it is important to do this immediately
     // after the attack->decay transition above in the event that the sustain level
     // is set to 0 (in which case we will skip right to sustain without doing any
     // decay); as an example where this can be heard, check the cymbals sound
     // in channel 0 of shinobi's test mode sound #5
-    if (self->envelope_state[op] == EG_DECAY && self->envelope_attenuation[op] >= compute_eg_sustain(op_data))
-        self->envelope_state[op] = EG_SUSTAIN;
+    if (self->envelope_state[op] == SGU_EG_DECAY && self->envelope_attenuation[op] >= compute_eg_sustain(op_data))
+        self->envelope_state[op] = SGU_EG_SUSTAIN;
 
     // compute the 6-bit rate value for the current envelope state
     uint32_t rate = compute_eg_rate(op_data, ch_freq, self->envelope_state[op]);
@@ -537,7 +537,7 @@ static inline void clock_envelope(struct sgu_ch_state *self, uint8_t op, uint8_t
     uint32_t increment = attenuation_increment(rate, relevant_bits);
 
     // attack is the only one that increases
-    if (self->envelope_state[op] == EG_ATTACK)
+    if (self->envelope_state[op] == SGU_EG_ATTACK)
     {
         // glitch means that attack rates of 62/63 don't increment if
         // changed after the initial key on (where they are handled
@@ -683,6 +683,37 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
 
         int32_t ch_sample = 0;
 
+        if (sgu->chan[ch].flags0 & SGU1_FLAGS0_PCM_MASK)
+        {
+            // PCM path (SoundUnit-style): feed current sample and advance position using freq16.
+            ch_sample = (int32_t)sgu->pcm[sgu->chan[ch].pcmpos] << 8;
+
+            uint32_t step = sgu->chan[ch].freq;
+            if (step > 0x8000)
+                step = 0x8000;
+
+            sgu->pcm_phase_accum[ch] += (int32_t)step;
+            while (sgu->pcm_phase_accum[ch] >= 0x8000)
+            {
+                sgu->pcm_phase_accum[ch] -= 0x8000;
+                if (sgu->chan[ch].pcmpos < sgu->chan[ch].pcmbnd)
+                {
+                    sgu->chan[ch].pcmpos++;
+                    if (sgu->chan[ch].pcmpos == sgu->chan[ch].pcmbnd)
+                    {
+                        if (sgu->chan[ch].flags1 & SGU1_FLAGS1_PCM_LOOP)
+                            sgu->chan[ch].pcmpos = sgu->chan[ch].pcmrst;
+                    }
+                    sgu->chan[ch].pcmpos &= (SGU_PCM_RAM_SIZE - 1);
+                }
+                else if (sgu->chan[ch].flags1 & SGU1_FLAGS1_PCM_LOOP)
+                {
+                    sgu->chan[ch].pcmpos = sgu->chan[ch].pcmrst;
+                }
+            }
+        }
+        else
+        {
         // run channel operators
         for (uint8_t op = 0; op < SGU_OP_PER_CH; op++)
         {
@@ -795,7 +826,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
 
                 switch (SGU_OP7_WAVE(op_data[7]))
                 {
-                case WAVE_SINE:
+                case SGU_WAVE_SINE:
                 {
                     // Skewed sine: Peak at 'peak', Trough at '1024 - peak'
                     // peak=0:   Falling Sine-Saw (Starts at max, falls to min)
@@ -830,7 +861,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     sample = idx < 512 ? sample : (int16_t)-sample;
                 }
                 break;
-                case WAVE_TRIANGLE:
+                case SGU_WAVE_TRIANGLE:
                 {
                     // Skewed triangle: Peak at 'peak', Trough at '1024 - peak'
                     // peak=0:   Falling Saw (Starts at max, falls to min)
@@ -861,7 +892,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     }
                 }
                 break;
-                case WAVE_SAWTOOTH:
+                case SGU_WAVE_SAWTOOTH:
                 {
                     // WPAR bit 0 selects rising/falling (invert when set)
                     if (wpar & 0x01)
@@ -880,7 +911,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     sample = (int16_t)(centered << 6);                 // scale to 16-bit range
                 }
                 break;
-                case WAVE_PULSE:
+                case SGU_WAVE_PULSE:
                 {
                     // compare phase-derived 7-bit ramp against duty (0..127).
                     // WPAR: 0 => channel duty, 1..7 => fixed pulse width (x/8)
@@ -890,7 +921,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     sample = (((phase >> 3) & 127) >= duty) ? 32767 : -32768;
                 }
                 break;
-                case WAVE_NOISE:
+                case SGU_WAVE_NOISE:
                 {
                     // White noise: clock 32-bit LFSR on phase bit 27 rising edges (SID-compatible)
                     // SID clocks noise when bit 19 of 24-bit accumulator goes 0→1
@@ -910,7 +941,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     sample = (ch_state->noise_lfsr[op] & 1) ? 32767 : -32768;
                 }
                 break;
-                case WAVE_PERIODIC_NOISE:
+                case SGU_WAVE_PERIODIC_NOISE:
                 {
                     // Periodic noise: uses smaller 6-bit LFSR with configurable taps (su.c style)
                     // Clock on phase bit 27 rising edges (SID-compatible, same as WAVE_NOISE)
@@ -1015,6 +1046,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
             {
                 // mix the operator to output
                 ch_sample += val >> (7 - out);
+            }
             }
         }
 
@@ -1316,7 +1348,7 @@ void SGU_Init(struct SGU *sgu, size_t sampleMemSize)
     for (size_t i = 0; i < SGU_WAVEFORM_LENGTH / 2; i++)
     {
         // sine
-        const float sin_val = sin(((float)i / (float)(SGU_WAVEFORM_LENGTH / 2)) * M_PI) * INT16_MAX;
+        const float sin_val = sin(((float)i / ((float)SGU_WAVEFORM_LENGTH / 2)) * M_PI) * INT16_MAX;
         sgu->waveform_lut[i] = (int16_t)sin_val;
     }
 
