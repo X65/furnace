@@ -20,6 +20,59 @@
 #include "gui.h"
 #include <imgui.h>
 
+namespace {
+constexpr int kEsfmOpRegs = 8;
+constexpr int kEsfmChanStride = 32;
+constexpr int kSguOpRegs = 8;
+constexpr int kSguChanStride = 64;
+
+int findSystemIndex(const DivSong& song, DivSystem sys) {
+  for (int i = 0; i < song.systemLen; i++) {
+    if (song.system[i] == sys) return i;
+  }
+  return -1;
+}
+
+void appendHexByte(String& out, unsigned char v) {
+  static const char* hex = "0123456789ABCDEF";
+  out.push_back(hex[(v >> 4) & 0xF]);
+  out.push_back(hex[v & 0xF]);
+}
+
+void appendOpBytes(String& out, const unsigned char* pool, int size, int base, int count) {
+  for (int i = 0; i < count; i++) {
+    if (i) out.push_back(' ');
+    int idx = base + i;
+    if (pool && idx >= 0 && idx < size) {
+      appendHexByte(out, pool[idx]);
+    } else {
+      out.append("??");
+    }
+  }
+}
+
+String buildSguEsfmOpCompare(const unsigned char* sguPool, int sguSize,
+                             const unsigned char* esfmPool, int esfmSize,
+                             int sguChan, int esfmChan) {
+  String out;
+  out.reserve(512);
+  out += "OP  | SGU r0 r1 r2 r3 r4 r5 r6 r7 | ESFM r0 r1 r2 r3 r4 r5 r6 r7\n";
+  out += "----+--------------------------------+--------------------------------\n";
+  for (int op = 0; op < 4; op++) {
+    out += "OP";
+    out.push_back('0' + op);
+    out += " |     ";
+    int sguBase = sguChan * kSguChanStride + op * kSguOpRegs;
+    appendOpBytes(out, sguPool, sguSize, sguBase, kSguOpRegs);
+    out += " |      ";
+    int esfmBase = esfmChan * kEsfmChanStride + op * kEsfmOpRegs;
+    appendOpBytes(out, esfmPool, esfmSize, esfmBase, kEsfmOpRegs);
+    out.push_back('\n');
+  }
+  return out;
+}
+} // namespace
+
 void FurnaceGUI::drawRegView() {
   if (nextWindow==GUI_WINDOW_REGISTER_VIEW) {
     channelsOpen=true;
@@ -28,6 +81,42 @@ void FurnaceGUI::drawRegView() {
   }
   if (!regViewOpen) return;
   if (ImGui::Begin("Register View",&regViewOpen,globalWinFlags,_("Register View"))) {
+    if (ImGui::CollapsingHeader(_("SGU/ESFM ch0 operator compare"), ImGuiTreeNodeFlags_DefaultOpen)) {
+      static String sguEsfmDump;
+      const int sguSys = findSystemIndex(e->song, DIV_SYSTEM_SGU);
+      const int esfmSys = findSystemIndex(e->song, DIV_SYSTEM_ESFM);
+      if (sguSys < 0 || esfmSys < 0) {
+        ImGui::TextUnformatted(_("Add both SGU-1 and ESFM chips to compare register dumps."));
+      } else {
+        int sguSize = 0;
+        int esfmSize = 0;
+        int sguDepth = 8;
+        int esfmDepth = 8;
+        unsigned char* sguPool = e->getRegisterPool(sguSys, sguSize, sguDepth);
+        unsigned char* esfmPool = e->getRegisterPool(esfmSys, esfmSize, esfmDepth);
+        if (sguPool == NULL || esfmPool == NULL || sguDepth != 8 || esfmDepth != 8) {
+          ImGui::TextUnformatted(_("Register pool unavailable for SGU/ESFM."));
+        } else {
+          if (ImGui::Button(_("Refresh dump"))) {
+            sguEsfmDump = buildSguEsfmOpCompare(sguPool, sguSize, esfmPool, esfmSize, 0, 0);
+          }
+          ImGui::SameLine();
+          ImGui::BeginDisabled(sguEsfmDump.empty());
+          if (ImGui::Button(_("Copy dump"))) {
+            ImGui::SetClipboardText(sguEsfmDump.c_str());
+          }
+          ImGui::EndDisabled();
+          ImGui::SameLine();
+          ImGui::Text(_("(SGU idx %d, ESFM idx %d)"), sguSys + 1, esfmSys + 1);
+          ImGui::BeginChild("SguEsfmDump", ImVec2(0.0f, 120.0f * dpiScale), true);
+          ImGui::PushFont(patFont);
+          ImGui::TextUnformatted(sguEsfmDump.empty() ? _("(click Refresh dump)") : sguEsfmDump.c_str());
+          ImGui::PopFont();
+          ImGui::EndChild();
+        }
+      }
+    }
+
     for (int i=0; i<e->song.systemLen; i++) {
       ImGui::Text("%d. %s",i+1,getSystemName(e->song.system[i]));
       int size=0;
