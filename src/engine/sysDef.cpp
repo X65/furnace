@@ -2253,6 +2253,15 @@ void DivEngine::registerSystems() {
     suEffectHandlerMap
   );
 
+  sysDefs[DIV_SYSTEM_SGU]=new DivSysDef(
+    _("SGU-1"), NULL, 0xd2, 0, 9, 9, 9,
+    true, true, 0, false, 1U<<DIV_SAMPLE_DEPTH_8BIT, 0, 0,
+    _("an ESFM with SID-like tuning."),
+    DivChanDefFunc(simpleChanDef<DIV_CH_FM,DIV_INS_ESFM,DIV_INS_AMIGA>),
+    {},
+    suEffectHandlerMap
+  );
+
   sysDefs[DIV_SYSTEM_MSM6295]=new DivSysDef(
     _("OKI MSM6295"), NULL, 0xaa, 0, 4, 4, 4,
     false, true, 0x161, false, 1U<<DIV_SAMPLE_DEPTH_VOX, 0, 0,

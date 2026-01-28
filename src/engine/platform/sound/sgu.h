@@ -319,6 +319,10 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 // - FIX mode ignores channel pitch and derives a fixed frequency from MUL+DT.
 // -----------------------------------------------------------------------------
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Waveform types for operator R7[2:0] (0..5 implemented)
 // - WAVE_NOISE: 32-bit LFSR white noise, SID-compatible clocking (freq16 * 0.9537 Hz)
 // - WAVE_PERIODIC_NOISE: 6-bit LFSR metallic/tonal noise
@@ -330,24 +334,24 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 //       3: taps 0,2,3,5 (max length ~63 states)
 typedef enum
 {
-    WAVE_SINE = 0,
-    WAVE_TRIANGLE = 1,
-    WAVE_SAWTOOTH = 2,
-    WAVE_PULSE = 3,
-    WAVE_NOISE = 4,
-    WAVE_PERIODIC_NOISE = 5,
-    WAVE_XOR_SINE = 6,     // reserved (unimplemented)
-    WAVE_XOR_TRIANGLE = 7, // reserved (unimplemented)
+    SGU_WAVE_SINE = 0,
+    SGU_WAVE_TRIANGLE = 1,
+    SGU_WAVE_SAWTOOTH = 2,
+    SGU_WAVE_PULSE = 3,
+    SGU_WAVE_NOISE = 4,
+    SGU_WAVE_PERIODIC_NOISE = 5,
+    SGU_WAVE_XOR_SINE = 6,     // reserved (unimplemented)
+    SGU_WAVE_XOR_TRIANGLE = 7, // reserved (unimplemented)
 } sgu_waveform_t;
 
 // various envelope states
 enum envelope_state : uint32_t
 {
-    EG_ATTACK = 0,
-    EG_DECAY = 1,
-    EG_SUSTAIN = 2,
-    EG_RELEASE = 3,
-    EG_STATES = 4
+    SGU_EG_ATTACK = 0,
+    SGU_EG_DECAY = 1,
+    SGU_EG_SUSTAIN = 2,
+    SGU_EG_RELEASE = 3,
+    SGU_EG_STATES = 4
 };
 
 struct SGU
@@ -562,3 +566,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r);
 // Convenience getter: returns mono downmix of current per-channel post-pan samples (averaged).
 // This is not used in NextSample, but useful for taps/meters/debug.
 int32_t SGU_GetSample(struct SGU *sgu, uint8_t ch);
+
+#ifdef __cplusplus
+}
+#endif
