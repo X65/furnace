@@ -201,39 +201,504 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
   DivInstrumentFM fm=ins->fm;
   DivInstrumentESFM esfm=ins->esfm;
 
+  for (int o=0; o<SGU_OP_PER_CH; o++) {
+
+  static const unsigned char oplToSguWaveformMap[8]={
+    /* 0: SINE         -> */ SGU_WAVE_SINE,
+    /* 1: HALF_SINE    -> */ SGU_WAVE_PULSE,
+    /* 2: ABS_SINE     -> */ SGU_WAVE_SINE,
+    /* 3: PULSE_SINE   -> */ SGU_WAVE_TRIANGLE,
+    /* 4: ALT_SINE     -> */ SGU_WAVE_PULSE,
+    /* 5: ABS_ALT_SINE -> */ SGU_WAVE_PULSE,
+    /* 6: SQUARE       -> */ SGU_WAVE_PULSE,
+    /* 7: LOG_SAW      -> */ SGU_WAVE_SAWTOOTH,
+  };
+
+  /* Convert waveforms */
   switch (ins->type) {
     case DIV_INS_ESFM:
-      {}
-      break;
-    case DIV_INS_AMIGA:
-      {}
-      break;
     case DIV_INS_FM:
-      {}
-      break;
     case DIV_INS_OPM:
-      {}
-      break;
     case DIV_INS_OPL:
-      {}
+    case DIV_INS_OPLL:
+    case DIV_INS_OPZ:
+      fm.op[o].ws=oplToSguWaveformMap[fm.op[o].ws & 0x07];
+    default:
+      break;
+  }
+
+  /* ### FM operator parameter support matrix
+         When shown, it's bits per parameter
+
+          | OPL | OPM | OPN | OPN2| OPZ | OPLL| ESFM| SGU |
+    -------------------------------------------------------
+      AR  |  4  |  5  |  5  |  5  |  5  |  4  |  4  |  5  |
+ D1R  DR  |  4  |  5  |  5  |  5  |  5  |  4  |  4  |  5  |
+ D1L  SL  |  4  |  4  |  4  |  4  |  4  |  4  |  4  |  4  |
+      SR  |  1  |  5  |  5  |  5  |  5  |  1  |  1  |  5  |
+ D2R  RR  |  4  |  4  |  4  |  4  |  4  |  4  |  4  |  4  |
+      TL  |  6  |  7  |  7  |  7  |  7  | 6/4 |  6  |  6  |
+      KSL |  2  |  -  |  -  |  -  |  -  |  2  |  2  |  2  |
+      KSR |  1  |  2  |  2  |  2  |  2  |  1  |  1  |  2  |
+    SSG-EG|  -  |  -  |  -  |  4  |  -  |  -  |  -  |  3  |
+      DT  |  -  |  3  |  3  |  3  |  3  |  -  |  -  |  -  |
+      DT2 |  -  |  2  |  -  |  -  |  -  |  -  |  -  |  -  |
+  AM  TRM |  1  |  1  |  -  |  1  |  1  |  1  |  1  |  1  |
+      TRMD|  1  |  2  |  -  |  2  |  2  |  -  |  1  |  1  |
+  FM  VIB |  1  |  -  |  -  |  -  |  -  |  1  |  1  |  1  |
+      VIBD|  1  |  3  |  -  |  3  |  3  |  -  |  1  |  1  |
+      MULT|  4  |  4  |  4  |  4  |     |  4  |  4  |  4  |
+      FIX |  -  |  -  |  -  |  -  |  1  |  -  |  -  |  1  |
+      MOD |  -  |  -  |  -  |     |  -  | *1) |  3  |  3  |
+      OUT |  -  |  -  |  -  |     |  -  |  4  |  3  |  3  |
+      WAV | 2/3 |  -  |  -  |  -  |  3  |  1  |  3  |  3  |
+      DEL |  -  |  -  |  -  |  -  |  -  |  -  |  3  |  3  |
+      WPAR|  -  |  -  |  -  |  -  |  -  |  -  |  -  |  3  |
+      SYNC|  -  |  -  |  -  |  -  |  -  |  -  |  -  |  1  |
+      RING|  -  |  -  |  -  |  -  |  -  |  -  |  -  |  1  |
+
+      *1) - OPLL Reg 03
+        DC - Reg 03, Bit 4: carrier waveform select;   1 = “distortion” waveform = flat/rectified (“half-sine”) variant
+        DM - Reg 03, Bit 3: modulator waveform select; 1 = flat/rectified (“half-sine”) variant
+        FB - Reg 03, Bits 2-0: feedback amount for the modulator (operator 1), 0..7
+  */
+
+  /* OPN2
+    Algorithm #	Layout	   Suggested uses
+            0   1-2-3-4->  Distortion guitar, "high hat chopper" (?) bass
+            1   1-+3-4->   Harp, PSG (programmable sound generator) sound
+                2/
+            2   1---+4->   Bass, electric guitar, brass, piano, woods
+                2-3/
+            3   1-2-+4->   Strings, folk guitar, chimes
+                  3/
+            4   1-2-+->    Flute, bells, chorus, bass drum, snare drum, tom-tom
+                3-4/
+            5      /-2-\   Brass, organ
+                1-+--3--+->
+                   \-4-/
+            6   1-2-\      Xylophone, tom-tom, organ, vibraphone, snare drum, base drum
+                  3--+->
+                  4-/
+            7   1-\        Pipe organ
+                2-+->
+                3-/
+                4-/
+
+  */
+
+  /* Convert ADSR envelope parameters */
+  switch (ins->type) {
+    case DIV_INS_ESFM:
+    case DIV_INS_OPL:
+      {
+        // AR/DR need shifting from 4-bit to 5-bit
+        fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
+        fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
+        // TL needs shifting from 6-bit to 7-bit
+        fm.op[o].tl=(unsigned char)(((fm.op[o].tl & 0x3f) << 1) | 1);
+        // Convert EGT flag to D2R rate
+        fm.op[o].d2r = fm.op[o].egt ? 0 : 31;
+      }
       break;
     case DIV_INS_OPLL:
-      {}
+      {
+        // AR/DR need shifting from 4-bit to 5-bit
+        fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
+        fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
+        // TL: modulator is 6-bit, carrier is 4-bit
+        fm.op[o].tl=(o==0)
+          ? (unsigned char)(((fm.op[o].tl & 0x3f) << 1) | 1)
+          : (unsigned char)(((fm.op[o].tl & 0x0f) << 3) | 0x04);
+        // Convert Sustain flag to D2R rate
+        fm.op[o].d2r = fm.op[o].sus ? 0 : 31;
+        // Convert KSR and apply global AMS/FMS
+        fm.op[o].rs=(fm.op[o].ksr&1)?3:0;
+        fm.op[o].dam=fm.ams&1;
+        fm.op[o].dvb=fm.fms&1;
+      }
       break;
+    case DIV_INS_FM:
+    case DIV_INS_OPM:
     case DIV_INS_OPZ:
-      {}
-      break;
-    case DIV_INS_SU:
-      {}
+      // OPN/OPM/OPZ already have 5-bit AR/DR and 7-bit TL - use as-is
       break;
     case DIV_INS_C64:
-      {}
+      {
+        // C64 uses single carrier on op3; disable modulators
+        if (o==3) {
+          // Convert C64 ADSR (4-bit each) to FM envelope on carrier
+          const unsigned char decay=(ins->c64.s==15)?0:(ins->c64.d&0x0f);
+          fm.op[o].ar=(unsigned char)(((ins->c64.a & 0x0f) << 1) | 1);
+          fm.op[o].dr=(unsigned char)(((decay & 0x0f) << 1) | 1);
+          fm.op[o].sl=(unsigned char)(15-(ins->c64.s&0x0f));
+          fm.op[o].rr=ins->c64.r&0x0f;
+          fm.op[o].d2r=0;
+          fm.op[o].tl=0;
+          fm.op[o].mult=1;
+          fm.op[o].ws=sguC64Wave(ins->c64,false);
+        } else {
+          // Disable modulator operators
+          fm.op[o].tl=127;
+          fm.op[o].enable=false;
+        }
+      }
       break;
     case DIV_INS_SID2:
-      {}
+      {
+        // SID2 uses single carrier on op3; disable modulators
+        if (o==3) {
+          const bool periodicNoise=(ins->sid2.noiseMode!=0);
+          const unsigned char decay=(ins->c64.s==15)?0:(ins->c64.d&0x0f);
+          fm.op[o].ar=(unsigned char)(((ins->c64.a & 0x0f) << 1) | 1);
+          fm.op[o].dr=(unsigned char)(((decay & 0x0f) << 1) | 1);
+          fm.op[o].sl=(unsigned char)(15-(ins->c64.s&0x0f));
+          fm.op[o].rr=ins->c64.r&0x0f;
+          fm.op[o].d2r=0;
+          fm.op[o].tl=0;
+          fm.op[o].mult=1;
+          fm.op[o].ws=sguC64Wave(ins->c64,periodicNoise);
+        } else {
+          fm.op[o].tl=127;
+          fm.op[o].enable=false;
+        }
+      }
+      break;
+    case DIV_INS_SU:
+      {
+        // SoundUnit uses single carrier on op3 with simple envelope
+        if (o==3) {
+          fm.op[o].ar=31;
+          fm.op[o].dr=0;
+          fm.op[o].sl=0;
+          fm.op[o].rr=15;
+          fm.op[o].d2r=0;
+          fm.op[o].tl=0;
+          fm.op[o].mult=1;
+          fm.op[o].ws=SGU_WAVE_SAWTOOTH;
+        } else {
+          fm.op[o].tl=127;
+          fm.op[o].enable=false;
+        }
+      }
       break;
     case DIV_INS_POKEY:
-      {}
+      {
+        // POKEY uses single carrier on op3 with instant envelope
+        if (o==3) {
+          fm.op[o].ar=31;
+          fm.op[o].dr=0;
+          fm.op[o].sl=0;
+          fm.op[o].rr=15;
+          fm.op[o].d2r=0;
+          fm.op[o].tl=0;
+          fm.op[o].mult=1;
+          fm.op[o].ws=SGU_WAVE_PULSE;
+        } else {
+          fm.op[o].tl=127;
+          fm.op[o].enable=false;
+        }
+      }
+      break;
+    default:
+      break;
+  }
+  }
+
+  /* Convert operator algorithms */
+  switch (ins->type) {
+    case DIV_INS_ESFM:
+      // ESFM is native format for SGU - use as-is
+      break;
+    case DIV_INS_AMIGA:
+      // Handled by PCM path above
+      break;
+    case DIV_INS_FM:
+      // OPN-style 4-operator FM
+      // Convert algorithm (0-7) to ESFM-style modIn/outLvl routing
+      // AR/DR are 5-bit, TL is 7-bit in OPN; already handled by first switch
+      {
+        esfm=DivInstrumentESFM();
+        // OPN algorithm mapping to ESFM operator routing:
+        // Algorithm determines which operators output and modulation routing
+        switch (fm.alg & 7) {
+          case 0: // 1→2→3→4→out (serial)
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 1: // (1+2)→3→4→out
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 2: // 1+(2→3)→4→out
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 3: // (1→2)+3→4→out
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 4: // (1→2)+(3→4)→out
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 5: // 1→(2+3+4)→out
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 6: // (1→2)+3+4→out
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=0;       esfm.op[3].outLvl=7;
+            break;
+          case 7: // 1+2+3+4→out (additive)
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=7;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=0;       esfm.op[3].outLvl=7;
+            break;
+        }
+      }
+      break;
+    case DIV_INS_OPM:
+      // OPM-style 4-operator FM (same algorithm structure as OPN)
+      // AR/DR are 5-bit, TL is 7-bit; scaling already done in first switch
+      {
+        esfm=DivInstrumentESFM();
+        switch (fm.alg & 7) {
+          case 0:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 1:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 2:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 3:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 4:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 5:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 6:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=0;       esfm.op[3].outLvl=7;
+            break;
+          case 7:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=7;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=0;       esfm.op[3].outLvl=7;
+            break;
+        }
+      }
+      break;
+    case DIV_INS_OPL:
+      // OPL-style 2-operator FM
+      // Only operators 0 and 1 are used; disable 2 and 3
+      {
+        esfm=DivInstrumentESFM();
+        // OPL algorithm: 0 = modulator→carrier, 1 = additive
+        const bool algAdd=(fm.alg&1);
+        esfm.op[0].modIn=fm.fb&7;
+        esfm.op[0].outLvl=algAdd?7:0;
+        esfm.op[1].modIn=algAdd?0:7;
+        esfm.op[1].outLvl=7;
+        // Disable operators 2 and 3
+        for (int i=2; i<4; i++) {
+          fm.op[i].enable=false;
+          fm.op[i].tl=127;
+          esfm.op[i].outLvl=0;
+          esfm.op[i].modIn=0;
+        }
+      }
+      break;
+    case DIV_INS_OPLL:
+      // OPLL-style 2-operator FM (very similar to OPL)
+      {
+        esfm=DivInstrumentESFM();
+        // Scale TL for carrier (op1) from 4-bit to 7-bit
+        fm.op[1].tl=(unsigned char)(((fm.op[1].tl & 0x0f) << 3) | 0x04);
+        // Convert KSR
+        for (int i=0; i<2; i++) {
+          fm.op[i].rs=(fm.op[i].ksr&1)?3:0;
+          fm.op[i].dam=fm.ams&1;
+          fm.op[i].dvb=fm.fms&1;
+        }
+        const bool algAdd=(fm.alg&1);
+        esfm.op[0].modIn=fm.fb&7;
+        esfm.op[0].outLvl=algAdd?7:0;
+        esfm.op[1].modIn=algAdd?0:7;
+        esfm.op[1].outLvl=7;
+        // Disable operators 2 and 3
+        for (int i=2; i<4; i++) {
+          fm.op[i].enable=false;
+          fm.op[i].tl=127;
+          esfm.op[i].outLvl=0;
+          esfm.op[i].modIn=0;
+        }
+      }
+      break;
+    case DIV_INS_OPZ:
+      // OPZ-style 4-operator FM (similar to OPM with fixed frequency support)
+      {
+        esfm=DivInstrumentESFM();
+        // Copy fixed frequency flags
+        for (int o=0; o<4; o++) {
+          esfm.op[o].fixed=fm.op[o].egt;
+        }
+        switch (fm.alg & 7) {
+          case 0:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 1:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 2:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 3:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=0;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 4:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=0;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 5:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=7;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=7;       esfm.op[3].outLvl=7;
+            break;
+          case 6:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=0;
+            esfm.op[1].modIn=7;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=0;       esfm.op[3].outLvl=7;
+            break;
+          case 7:
+            esfm.op[0].modIn=fm.fb&7; esfm.op[0].outLvl=7;
+            esfm.op[1].modIn=0;       esfm.op[1].outLvl=7;
+            esfm.op[2].modIn=0;       esfm.op[2].outLvl=7;
+            esfm.op[3].modIn=0;       esfm.op[3].outLvl=7;
+            break;
+        }
+      }
+      break;
+    case DIV_INS_SU:
+    case DIV_INS_POKEY:
+      // Single oscillator mapped to op3 - set routing only
+      // ADSR conversion handled in first switch
+      {
+        esfm=DivInstrumentESFM();
+        for (int o=0; o<3; o++) {
+          esfm.op[o].outLvl=0;
+          esfm.op[o].modIn=0;
+        }
+        esfm.op[3].modIn=0;
+        esfm.op[3].outLvl=7;
+      }
+      break;
+    case DIV_INS_C64:
+    case DIV_INS_SID2:
+      // C64/SID2 - single carrier on op3, plus channel settings
+      // ADSR conversion handled in first switch
+      {
+        esfm=DivInstrumentESFM();
+        for (int o=0; o<3; o++) {
+          esfm.op[o].outLvl=0;
+          esfm.op[o].modIn=0;
+        }
+        esfm.op[3].modIn=0;
+        esfm.op[3].outLvl=7;
+
+        // Handle duty cycle
+        if (ins->c64.resetDuty || chan[ch].insChanged) {
+          const unsigned short dutyClamp=(ins->c64.duty>4095)?4095:ins->c64.duty;
+          chan[ch].duty=(unsigned char)(dutyClamp>>5);
+          chan[ch].virtual_duty=(unsigned short)chan[ch].duty<<5;
+          chWrite(ch,SGU1_CHN_DUTY,chan[ch].duty);
+        }
+
+        // Handle filter settings
+        bool updateFilter=false;
+        if (!ins->c64.toFilter) {
+          if (chan[ch].control!=0) {
+            chan[ch].control=0;
+            updateFilter=true;
+          }
+        } else if (ins->c64.initFilter || chan[ch].insChanged) {
+          if (ins->c64.initFilter) {
+            const unsigned int cutClamp=(ins->c64.cut>2047)?2047:ins->c64.cut;
+            chan[ch].cutoff=(unsigned short)((cutClamp*65535U+1023U)/2047U);
+            chan[ch].baseCutoff=chan[ch].cutoff;
+            const unsigned char resClamp=ins->c64.res&0x0f;
+            chan[ch].res=(unsigned char)((resClamp<<4)|resClamp);
+            chan[ch].control=(ins->c64.lp?2:0)|(ins->c64.hp?4:0)|(ins->c64.bp?8:0);
+            updateFilter=true;
+          }
+        }
+        if (updateFilter) {
+          chWrite(ch,SGU1_CHN_CUTOFF_L,chan[ch].cutoff&0xff);
+          chWrite(ch,SGU1_CHN_CUTOFF_H,chan[ch].cutoff>>8);
+          chWrite(ch,SGU1_CHN_RESON,chan[ch].res);
+          writeControl(ch);
+        }
+
+        chan[ch].ringMask=0;
+        chan[ch].syncMask=0;
+      }
       break;
     default:
       break;
