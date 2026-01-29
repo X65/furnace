@@ -37,13 +37,13 @@ static const char *eg_state_name(enum envelope_state st)
 {
     switch (st)
     {
-    case EG_ATTACK:
+    case SGU_EG_ATTACK:
         return "ATT";
-    case EG_DECAY:
+    case SGU_EG_DECAY:
         return "DEC";
-    case EG_SUSTAIN:
+    case SGU_EG_SUSTAIN:
         return "SUS";
-    case EG_RELEASE:
+    case SGU_EG_RELEASE:
         return "REL";
     default:
         return "?";
@@ -385,10 +385,10 @@ static void eg_debug_params(struct SGU *sgu, uint8_t ch, uint8_t op, uint8_t op_
     uint32_t sr = SGU_OP4_SR(op_data[4]);
     uint32_t rr = SGU_OP3_RR(op_data[3]);
     uint32_t sus_scaled = compute_eg_sustain(op_data);
-    uint32_t rate_a = compute_eg_rate(op_data, ch_freq, EG_ATTACK);
-    uint32_t rate_d = compute_eg_rate(op_data, ch_freq, EG_DECAY);
-    uint32_t rate_s = compute_eg_rate(op_data, ch_freq, EG_SUSTAIN);
-    uint32_t rate_r = compute_eg_rate(op_data, ch_freq, EG_RELEASE);
+    uint32_t rate_a = compute_eg_rate(op_data, ch_freq, SGU_EG_ATTACK);
+    uint32_t rate_d = compute_eg_rate(op_data, ch_freq, SGU_EG_DECAY);
+    uint32_t rate_s = compute_eg_rate(op_data, ch_freq, SGU_EG_SUSTAIN);
+    uint32_t rate_r = compute_eg_rate(op_data, ch_freq, SGU_EG_RELEASE);
     double ms = (double)sgu->sample_counter * 1000.0 / (double)SGU_CHIP_CLOCK;
 
     printf("SGU EG ch%u op%u regs: r0=%02X r1=%02X r2=%02X r3=%02X r4=%02X r5=%02X r6=%02X r7=%02X\n",
@@ -487,7 +487,7 @@ static void fm_channel_reset(struct sgu_ch_state *self, size_t ch_idx)
         self->noise_lfsr[op] = 0x1FFFFF ^ ((uint32_t)(ch_idx * SGU_OP_PER_CH + op) << 8);
 #if SGU_EG_DEBUG
         self->eg_last_transition[op] = 0;
-        self->eg_last_state[op] = EG_RELEASE;
+        self->eg_last_state[op] = SGU_EG_RELEASE;
 #endif
     }
 }
@@ -1441,7 +1441,7 @@ void SGU_Reset(struct SGU *sgu)
     SGU_Write(sgu, 0x02, (uint8_t)((AR5 & 0xF) << 4) | (DR5 & 0xF));
     SGU_Write(sgu, 0x03, (uint8_t)((SL4 & 0xF) << 4) | (RR4 & 0xF));
     SGU_Write(sgu, 0x04, (uint8_t)((SR5 & 0x1F)));
-    SGU_Write(sgu, 0x07, (uint8_t)((AR5 & 0x10) | ((DR5 & 0x10) >> 1) | WAVE_SINE | 0xE0)); // Full OUT, sine
+    SGU_Write(sgu, 0x07, (uint8_t)((AR5 & 0x10) | ((DR5 & 0x10) >> 1) | SGU_WAVE_SINE | 0xE0)); // Full OUT, sine
 #endif
     // // operator 2
     // SGU_Write(sgu, 0x08, 0x02);
