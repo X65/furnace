@@ -517,7 +517,8 @@ struct SGU
     bool muted[SGU_CHNS];
 
     // ------ private generator state ------
-    uint32_t sample_counter; // sample clock ticks
+    uint32_t sample_counter;   // sample clock ticks
+    uint32_t envelope_counter; // envelope counter; low 2 bits are sub-counter
 
     // internal state - global LFO
     uint16_t m_lfo_am_counter; // LFO AM counter

@@ -27,7 +27,7 @@ static inline int32_t clamp(int32_t value, int32_t minval, int32_t maxval)
 }
 
 // uint32_t EG_CLOCK_DIVIDER: The clock divider of the envelope generator
-static const uint32_t EG_CLOCK_DIVIDER = 1;
+static const uint32_t EG_CLOCK_DIVIDER = 3;
 
 // "quiet" value, used to optimize when we can skip doing work
 static const uint32_t EG_QUIET = 0x380;
@@ -340,7 +340,8 @@ static inline void freq16_to_ksl_params(uint16_t freq16, uint32_t *block, uint32
 //-------------------------------------------------
 static inline uint8_t compute_eg_rate(uint8_t op_data[], uint16_t ch_freq, enum envelope_state state)
 {
-    uint32_t keycode = keycode_from_freq16_cheaper(ch_freq);
+    // OPM-style 5-bit keycode (block + top 2 frac bits)
+    uint32_t keycode = keycode_from_freq16_32(ch_freq);
     uint32_t ksrval = keycode >> (SGU_OP5_KSR(op_data[5]) ^ 3);
     uint32_t rawrate;
     switch (state)
@@ -360,15 +361,6 @@ static inline uint8_t compute_eg_rate(uint8_t op_data[], uint16_t ch_freq, enum 
         break;
     }
     uint32_t rate = effective_rate(rawrate, ksrval);
-    // SGU runs EG at 48kHz; OPN/YM2612 EG clock is ~M/144/3 (≈ 17.7 kHz for 7.67 MHz NTSC).
-    // To keep the OPN-style rate table and logic but run at 48 kHz, scale rates by ~17.7/48 ≈ 0.37 (≈ 1/2.7).
-    if (rate < 62)
-    {
-        uint32_t scaled = (rate * 3 + 4) >> 3; // round( rate * 3/8 )
-        if (rate != 0 && scaled == 0)
-            scaled = 1;
-        rate = scaled;
-    }
     return (uint8_t)rate;
 }
 
@@ -377,8 +369,8 @@ static void eg_debug_params(struct SGU *sgu, uint8_t ch, uint8_t op, uint8_t op_
 {
     if (ch != 0 || op != 0)
         return;
-    uint32_t keycode = keycode_from_freq16_cheaper(ch_freq);
-    uint32_t ksrval = keycode >> (SGU_OP0_KSR(op_data[0]) ? 0 : 2);
+    uint32_t keycode = keycode_from_freq16_32(ch_freq);
+    uint32_t ksrval = keycode >> (SGU_OP5_KSR(op_data[5]) ^ 3);
     uint32_t ar = SGU_OP27_AR(op_data[2], op_data[7]);
     uint32_t dr = SGU_OP27_DR(op_data[2], op_data[7]);
     uint32_t sl = SGU_OP3_SL(op_data[3]);
@@ -676,6 +668,11 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
     int16_t src0_cached = sgu->src[0];
 
     sgu->sample_counter += 1;
+    // YMFM-style envelope counter with 2-bit subcounter
+    if (EG_CLOCK_DIVIDER == 1)
+        sgu->envelope_counter += 4;
+    else if (bitfield(++sgu->envelope_counter, 0, 2) == EG_CLOCK_DIVIDER)
+        sgu->envelope_counter += 4 - EG_CLOCK_DIVIDER;
 
     // clock the global LFO (once per sample)
     int32_t lfo_raw_pm = clock_lfo(
@@ -784,8 +781,9 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                 prev_state = ch_state->envelope_state[op];
 #endif
 
-                // clock the envelope
-                clock_envelope(ch_state, op, op_data, ch_freq, sgu->sample_counter);
+                // clock the envelope (only on envelope ticks)
+                if (bitfield(sgu->envelope_counter, 0, 2) == 0)
+                    clock_envelope(ch_state, op, op_data, ch_freq, sgu->envelope_counter >> 2);
 
 #if SGU_EG_DEBUG
                 if (ch_state->envelope_state[op] != prev_state)
@@ -1391,6 +1389,7 @@ void SGU_Reset(struct SGU *sgu)
     memset(sgu->chan, 0, sizeof(struct SGU_CH) * SGU_CHNS);
 
     sgu->sample_counter = 0;
+    sgu->envelope_counter = 0;
     sgu->m_lfo_am_counter = 0;
     sgu->m_lfo_pm_counter = 0;
     sgu->m_lfo_am = 0;
