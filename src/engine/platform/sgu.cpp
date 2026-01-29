@@ -40,42 +40,7 @@ static constexpr int SGU_CH_BASE = SGU_OP_PER_CH * SGU_OP_REGS;
 
 #define CHIP_FREQBASE 524288
 
-enum {
-  SGU_REG_FREQ_L      = 0x00,
-  SGU_REG_FREQ_H      = 0x01,
-  SGU_REG_VOL         = 0x02,
-  SGU_REG_PAN         = 0x03,
-  SGU_REG_FLAGS0      = 0x04,
-  SGU_REG_FLAGS1      = 0x05,
-  SGU_REG_CUTOFF_L    = 0x06,
-  SGU_REG_CUTOFF_H    = 0x07,
-  SGU_REG_DUTY        = 0x08,
-  SGU_REG_RESON       = 0x09,
-  SGU_REG_PCM_POS_L   = 0x0A,
-  SGU_REG_PCM_POS_H   = 0x0B,
-  SGU_REG_PCM_END_L   = 0x0C,
-  SGU_REG_PCM_END_H   = 0x0D,
-  SGU_REG_PCM_RST_L   = 0x0E,
-  SGU_REG_PCM_RST_H   = 0x0F,
-  SGU_REG_SWFREQ_L    = 0x10,
-  SGU_REG_SWFREQ_H    = 0x11,
-  SGU_REG_SWFREQ_AMT  = 0x12,
-  SGU_REG_SWFREQ_BND  = 0x13,
-  SGU_REG_SWVOL_L     = 0x14,
-  SGU_REG_SWVOL_H     = 0x15,
-  SGU_REG_SWVOL_AMT   = 0x16,
-  SGU_REG_SWVOL_BND   = 0x17,
-  SGU_REG_SWCUT_L     = 0x18,
-  SGU_REG_SWCUT_H     = 0x19,
-  SGU_REG_SWCUT_AMT   = 0x1A,
-  SGU_REG_SWCUT_BND   = 0x1B,
-  SGU_REG_RESTIMER_L  = 0x1C,
-  SGU_REG_RESTIMER_H  = 0x1D,
-  SGU_REG_SPECIAL1    = 0x1E,
-  SGU_REG_SPECIAL2    = 0x1F
-};
-
-const char* regCheatSheetSGU[]={
+static const char* regCheatSheetSGU[]={
   "CHx_OPy_R0 [7 TRM][6 VIB][5 FIX][3:0 MUL]", "00+x*40+y*08",
   "CHx_OPy_R1 [7:6 KSL][5:0 TL]", "01+x*40+y*08",
   "CHx_OPy_R2 [7:4 AR][3:0 DR]", "02+x*40+y*08",
@@ -101,16 +66,16 @@ const char* regCheatSheetSGU[]={
   "CHx_PCM_END_H", "2D+x*40",
   "CHx_PCM_RST_L", "2E+x*40",
   "CHx_PCM_RST_H", "2F+x*40",
-  "CHx_SWFREQ_L", "30+x*40",
-  "CHx_SWFREQ_H", "31+x*40",
+  "CHx_SWFREQ_SPD_L", "30+x*40",
+  "CHx_SWFREQ_SPD_H", "31+x*40",
   "CHx_SWFREQ_AMT", "32+x*40",
   "CHx_SWFREQ_BND", "33+x*40",
-  "CHx_SWVOL_L", "34+x*40",
-  "CHx_SWVOL_H", "35+x*40",
+  "CHx_SWVOL_SPD_L", "34+x*40",
+  "CHx_SWVOL_SPD_H", "35+x*40",
   "CHx_SWVOL_AMT", "36+x*40",
   "CHx_SWVOL_BND", "37+x*40",
-  "CHx_SWCUT_L", "38+x*40",
-  "CHx_SWCUT_H", "39+x*40",
+  "CHx_SWCUT_SPD_L", "38+x*40",
+  "CHx_SWCUT_SPD_H", "39+x*40",
   "CHx_SWCUT_AMT", "3A+x*40",
   "CHx_SWCUT_BND", "3B+x*40",
   "CHx_RESTIMER_L", "3C+x*40",
@@ -124,11 +89,45 @@ const char** DivPlatformSGU::getRegisterSheet() {
   return regCheatSheetSGU;
 }
 
+static unsigned char sguC64Wave(const DivInstrumentC64& c64, bool periodicNoise) {
+  if (c64.noiseOn) return periodicNoise ? SGU_WAVE_PERIODIC_NOISE : SGU_WAVE_NOISE;
+  if (c64.pulseOn) return SGU_WAVE_PULSE;
+  if (c64.sawOn) return SGU_WAVE_SAWTOOTH;
+  if (c64.triOn) return SGU_WAVE_TRIANGLE;
+  return SGU_WAVE_SAWTOOTH;
+}
+
+static int sguVolScaleLinear(const DivEngine* parent, int x, int y, int range) {
+  if (parent->song.compatFlags.ceilVolumeScaling) {
+    return (((x*y)+(range-1))/range);
+  }
+  return ((x*y)/range);
+}
+
+static int sguVolScaleLog(int x, int y, int range) {
+  return CLAMP(((x+y)-range),0,range);
+}
+
+static int sguVolScaleLogBroken(const DivEngine* parent, int x, int y, int range) {
+  if (parent->song.compatFlags.newVolumeScaling) {
+    return sguVolScaleLog(x,y,range);
+  }
+  return sguVolScaleLinear(parent,x,y,range);
+}
+
+static unsigned char sguOpllScaleVol(const DivEngine* parent, int chanVol, int macroVol) {
+  int base=CLAMP(chanVol,0,127);
+  int base15=(base*15+63)/127;
+  int macro15=CLAMP(macroVol,0,15);
+  int vol15=sguVolScaleLogBroken(parent,base15,macro15,15);
+  return (unsigned char)((vol15*127+7)/15);
+}
+
 void DivPlatformSGU::writeControl(int ch) {
   // flags0 uses SoundUnit-like layout, but bit 0 is KEY-ON instead of waveform.
   const unsigned char key = chan[ch].key ? 1 : 0;
   const unsigned char flags0 = (key & 1) | (chan[ch].pcm ? (1 << 3) : 0) | ((chan[ch].control & 0x0f) << 4);
-  chWrite(ch, SGU_REG_FLAGS0, flags0);
+  chWrite(ch, SGU1_CHN_FLAGS0, flags0);
 }
 
 void DivPlatformSGU::writeControlUpper(int ch) {
@@ -139,7 +138,7 @@ void DivPlatformSGU::writeControlUpper(int ch) {
     | (chan[ch].freqSweep ? 16 : 0)
     | (chan[ch].volSweep ? 32 : 0)
     | (chan[ch].cutSweep ? 64 : 0);
-  chWrite(ch, SGU_REG_FLAGS1, flags1);
+  chWrite(ch, SGU1_CHN_FLAGS1, flags1);
   chan[ch].phaseReset=false;
   chan[ch].filterPhaseReset=false;
 }
@@ -199,8 +198,49 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
 
   chan[ch].pcm=false;
 
-  chan[ch].state.fm=ins->fm;
-  chan[ch].state.esfm=ins->esfm;
+  DivInstrumentFM fm=ins->fm;
+  DivInstrumentESFM esfm=ins->esfm;
+
+  switch (ins->type) {
+    case DIV_INS_ESFM:
+      {}
+      break;
+    case DIV_INS_AMIGA:
+      {}
+      break;
+    case DIV_INS_FM:
+      {}
+      break;
+    case DIV_INS_OPM:
+      {}
+      break;
+    case DIV_INS_OPL:
+      {}
+      break;
+    case DIV_INS_OPLL:
+      {}
+      break;
+    case DIV_INS_OPZ:
+      {}
+      break;
+    case DIV_INS_SU:
+      {}
+      break;
+    case DIV_INS_C64:
+      {}
+      break;
+    case DIV_INS_SID2:
+      {}
+      break;
+    case DIV_INS_POKEY:
+      {}
+      break;
+    default:
+      break;
+  }
+
+  chan[ch].state.fm=fm;
+  chan[ch].state.esfm=esfm;
 
   for (int o=0; o<4; o++) {
     applyOpRegs(ch,o);
@@ -239,30 +279,34 @@ void DivPlatformSGU::acquire(short** buf, size_t len) {
 void DivPlatformSGU::tick(bool sysTick) {
   for (int i=0; i<SGU_CHNS; i++) {
     chan[i].std.next();
+    DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_ESFM);
+    const bool isOpll=(ins->type==DIV_INS_OPLL);
+    const bool isAmiga=(ins->type==DIV_INS_AMIGA || ins->amiga.useSample);
 
     if (sysTick) {
       if (chan[i].pw_slide!=0) {
         chan[i].virtual_duty-=chan[i].pw_slide;
         chan[i].virtual_duty=CLAMP(chan[i].virtual_duty,0,0xfff);
         chan[i].duty=chan[i].virtual_duty>>5;
-        chWrite(i,SGU_REG_DUTY,chan[i].duty);
+        chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
       }
       if (chan[i].cutoff_slide!=0) {
         chan[i].cutoff+=chan[i].cutoff_slide*16;
         chan[i].cutoff=CLAMP(chan[i].cutoff,0,0xffff);
-        chWrite(i,SGU_REG_CUTOFF_L,chan[i].cutoff&0xff);
-        chWrite(i,SGU_REG_CUTOFF_H,chan[i].cutoff>>8);
+        chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+        chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
       }
     }
 
     if (chan[i].std.vol.had) {
-      DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_ESFM);
-      if (ins->type==DIV_INS_AMIGA || ins->amiga.useSample) {
+      if (isAmiga) {
         chan[i].outVol=((chan[i].vol&127)*MIN(64,chan[i].std.vol.val))>>6;
+      } else if (isOpll) {
+        chan[i].outVol=sguOpllScaleVol(parent,chan[i].vol,chan[i].std.vol.val);
       } else {
         chan[i].outVol=((chan[i].vol&127)*MIN(127,chan[i].std.vol.val))>>7;
       }
-      chWrite(i,SGU_REG_VOL,chan[i].outVol);
+      chWrite(i,SGU1_CHN_VOL,chan[i].outVol);
     }
 
     if (NEW_ARP_STRAT) {
@@ -278,7 +322,7 @@ void DivPlatformSGU::tick(bool sysTick) {
     if (chan[i].std.duty.had) {
       chan[i].duty=chan[i].std.duty.val&127;
       chan[i].virtual_duty=(unsigned short)chan[i].duty<<5;
-      chWrite(i,SGU_REG_DUTY,chan[i].duty);
+      chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
     }
 
     if (chan[i].std.wave.had) {
@@ -294,7 +338,7 @@ void DivPlatformSGU::tick(bool sysTick) {
 
     if (chan[i].std.panL.had) {
       chan[i].pan=chan[i].std.panL.val;
-      chWrite(i,SGU_REG_PAN,chan[i].pan);
+      chWrite(i,SGU1_CHN_PAN,chan[i].pan);
     }
 
     if (chan[i].std.pitch.had) {
@@ -309,13 +353,13 @@ void DivPlatformSGU::tick(bool sysTick) {
 
     if (chan[i].std.ex1.had) {
       chan[i].cutoff=((chan[i].std.ex1.val&0x3fff)*chan[i].baseCutoff)/0x3fff;
-      chWrite(i,SGU_REG_CUTOFF_L,chan[i].cutoff&0xff);
-      chWrite(i,SGU_REG_CUTOFF_H,chan[i].cutoff>>8);
+      chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+      chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
     }
 
     if (chan[i].std.ex2.had) {
       chan[i].res=chan[i].std.ex2.val;
-      chWrite(i,SGU_REG_RESON,chan[i].res);
+      chWrite(i,SGU1_CHN_RESON,chan[i].res);
     }
 
     if (chan[i].std.ex3.had) {
@@ -326,8 +370,8 @@ void DivPlatformSGU::tick(bool sysTick) {
     if (chan[i].std.ex4.had) {
       chan[i].syncTimer=chan[i].std.ex4.val&65535;
       chan[i].timerSync=(chan[i].syncTimer>0);
-      chWrite(i,SGU_REG_RESTIMER_L,chan[i].syncTimer&0xff);
-      chWrite(i,SGU_REG_RESTIMER_H,chan[i].syncTimer>>8);
+      chWrite(i,SGU1_CHN_RESTIMER_L,chan[i].syncTimer&0xff);
+      chWrite(i,SGU1_CHN_RESTIMER_H,chan[i].syncTimer>>8);
       writeControlUpper(i);
     }
 
@@ -335,6 +379,20 @@ void DivPlatformSGU::tick(bool sysTick) {
       // Feedback maps to operator 1 MOD depth (op0 feedback) in SGU.
       chan[i].state.esfm.op[0].modIn=chan[i].std.fb.val&7;
       applyOpRegs(i,0);
+    }
+
+    if (isOpll && (chan[i].std.fms.had || chan[i].std.ams.had)) {
+      if (chan[i].std.fms.had) {
+        chan[i].state.fm.fms=chan[i].std.fms.val&1;
+      }
+      if (chan[i].std.ams.had) {
+        chan[i].state.fm.ams=chan[i].std.ams.val&1;
+      }
+      for (int o=0; o<2; o++) {
+        chan[i].state.fm.op[o].dvb=chan[i].state.fm.fms&1;
+        chan[i].state.fm.op[o].dam=chan[i].state.fm.ams&1;
+        applyOpRegs(i,o);
+      }
     }
 
     for (int o=0; o<4; o++) {
@@ -346,22 +404,55 @@ void DivPlatformSGU::tick(bool sysTick) {
       if (m.am.had) { op.am=m.am.val; opDirty=true; }
       if (m.vib.had) { op.vib=m.vib.val; opDirty=true; }
       if (m.mult.had) { op.mult=m.mult.val; opDirty=true; }
-      if (m.tl.had) { op.tl=m.tl.val; opDirty=true; }
-      if (m.ar.had) { op.ar=m.ar.val; opDirty=true; }
-      if (m.dr.had) { op.dr=m.dr.val; opDirty=true; }
+      if (m.tl.had) {
+        if (isOpll) {
+          op.tl=(o==0)
+            ? (unsigned char)(((m.tl.val & 0x3f) << 1) | 1)
+            : (unsigned char)(((m.tl.val & 0x0f) << 3) | 0x04);
+        } else {
+          op.tl=m.tl.val;
+        }
+        opDirty=true;
+      }
+      if (m.ar.had) {
+        op.ar=isOpll ? (unsigned char)(((m.ar.val & 0x0f) << 1) | 1) : m.ar.val;
+        opDirty=true;
+      }
+      if (m.dr.had) {
+        op.dr=isOpll ? (unsigned char)(((m.dr.val & 0x0f) << 1) | 1) : m.dr.val;
+        opDirty=true;
+      }
       if (m.sl.had) { op.sl=m.sl.val; opDirty=true; }
-      if (m.rr.had) { op.rr=m.rr.val; opDirty=true; }
-      if (m.d2r.had) { op.d2r=m.d2r.val; opDirty=true; }
-      if (m.dt.had) { op.dt=m.dt.val; opDirty=true; }
+      if (m.rr.had) {
+        op.rr=m.rr.val;
+        if (isOpll) {
+          op.d2r=(op.ssgEnv & 8) ? 0 : (unsigned char)(((op.rr & 0x0f) << 1) | 1);
+        }
+        opDirty=true;
+      }
+      if (m.d2r.had && !isOpll) { op.d2r=m.d2r.val; opDirty=true; }
+      if (m.dt.had && !isOpll) { op.dt=m.dt.val; opDirty=true; }
       if (m.rs.had) { op.rs=m.rs.val&3; opDirty=true; }
-      if (!m.rs.had && m.ksr.had) { op.rs=m.ksr.val&1; opDirty=true; }
+      if (!m.rs.had && m.ksr.had) {
+        op.rs=m.ksr.val&1;
+        op.ksr=m.ksr.val&1;
+        opDirty=true;
+      }
       if (m.ksl.had) { op.ksl=m.ksl.val; opDirty=true; }
       if (m.dam.had) { op.dam=m.dam.val; opDirty=true; }
       if (m.dvb.had) { op.dvb=m.dvb.val; opDirty=true; }
-      if (m.ws.had) { op.ws=m.ws.val; opDirty=true; }
-      if (m.dt2.had) { opE.delay=m.dt2.val; opDirty=true; }
-      if (m.egt.had) { opE.outLvl=m.egt.val; opDirty=true; }
-      if (m.ssg.had) { opE.modIn=m.ssg.val; opDirty=true; }
+      if (m.ws.had && !isOpll) { op.ws=m.ws.val; opDirty=true; }
+      if (m.dt2.had && !isOpll) { opE.delay=m.dt2.val; opDirty=true; }
+      if (m.egt.had) {
+        if (isOpll) {
+          op.ssgEnv=(op.ssgEnv&7)|((m.egt.val&1)<<3);
+          op.d2r=(op.ssgEnv & 8) ? 0 : (unsigned char)(((op.rr & 0x0f) << 1) | 1);
+        } else {
+          opE.outLvl=m.egt.val;
+        }
+        opDirty=true;
+      }
+      if (m.ssg.had && !isOpll) { opE.modIn=m.ssg.val; opDirty=true; }
 
       if (opDirty) {
         applyOpRegs(i,o);
@@ -393,8 +484,8 @@ void DivPlatformSGU::tick(bool sysTick) {
       if (chan[i].freq<0) chan[i].freq=0;
       if (chan[i].freq>65535) chan[i].freq=65535;
 
-      chWrite(i,SGU_REG_FREQ_L,chan[i].freq&0xff);
-      chWrite(i,SGU_REG_FREQ_H,chan[i].freq>>8);
+      chWrite(i,SGU1_CHN_FREQ_L,chan[i].freq&0xff);
+      chWrite(i,SGU1_CHN_FREQ_H,chan[i].freq>>8);
 
       if (chan[i].keyOn || chan[i].keyOff) {
         writeControl(i);
@@ -409,15 +500,15 @@ void DivPlatformSGU::tick(bool sysTick) {
             unsigned int off=sampleOffSGU[sNum]+chan[i].hasOffset;
             chan[i].hasOffset=0;
             if (sampleEnd>=getSampleMemCapacity(0)) sampleEnd=getSampleMemCapacity(0)-1;
-            chWrite(i,SGU_REG_PCM_POS_L,off&0xff);
-            chWrite(i,SGU_REG_PCM_POS_H,off>>8);
-            chWrite(i,SGU_REG_PCM_END_L,sampleEnd&0xff);
-            chWrite(i,SGU_REG_PCM_END_H,sampleEnd>>8);
+            chWrite(i,SGU1_CHN_PCM_POS_L,off&0xff);
+            chWrite(i,SGU1_CHN_PCM_POS_H,off>>8);
+            chWrite(i,SGU1_CHN_PCM_END_L,sampleEnd&0xff);
+            chWrite(i,SGU1_CHN_PCM_END_H,sampleEnd>>8);
             if (sample->isLoopable()) {
               unsigned int sampleLoop=sampleOffSGU[sNum]+sample->getLoopStartPosition();
               if (sampleLoop>=getSampleMemCapacity(0)) sampleLoop=getSampleMemCapacity(0)-1;
-              chWrite(i,SGU_REG_PCM_RST_L,sampleLoop&0xff);
-              chWrite(i,SGU_REG_PCM_RST_H,sampleLoop>>8);
+              chWrite(i,SGU1_CHN_PCM_RST_L,sampleLoop&0xff);
+              chWrite(i,SGU1_CHN_PCM_RST_H,sampleLoop>>8);
               chan[i].pcmLoop=true;
             } else {
               chan[i].pcmLoop=false;
@@ -428,7 +519,7 @@ void DivPlatformSGU::tick(bool sysTick) {
       }
 
       if (chan[i].keyOff && chan[i].pcm) {
-        chWrite(i,SGU_REG_VOL,0);
+        chWrite(i,SGU1_CHN_VOL,0);
       }
 
       if (chan[i].keyOn) chan[i].keyOn=false;
@@ -446,13 +537,17 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       chan[c.chan].key=true;
       chan[c.chan].macroInit(ins);
       if (!chan[c.chan].std.vol.will) {
-        chan[c.chan].outVol=chan[c.chan].vol;
+        if (ins->type==DIV_INS_OPLL) {
+          chan[c.chan].outVol=sguOpllScaleVol(parent,chan[c.chan].vol,15);
+        } else {
+          chan[c.chan].outVol=chan[c.chan].vol;
+        }
       }
 
       commitState(c.chan,ins);
       chan[c.chan].insChanged=false;
 
-      chWrite(c.chan,SGU_REG_VOL,chan[c.chan].outVol);
+      chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
 
       chan[c.chan].pcm=(ins->type==DIV_INS_AMIGA || ins->amiga.useSample);
       if (chan[c.chan].pcm) {
@@ -506,8 +601,13 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       if (chan[c.chan].vol!=c.value) {
         chan[c.chan].vol=c.value;
         if (!chan[c.chan].std.vol.has) {
-          chan[c.chan].outVol=c.value;
-          chWrite(c.chan,SGU_REG_VOL,chan[c.chan].outVol);
+          DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_ESFM);
+          if (ins->type==DIV_INS_OPLL) {
+            chan[c.chan].outVol=sguOpllScaleVol(parent,chan[c.chan].vol,15);
+          } else {
+            chan[c.chan].outVol=c.value;
+          }
+          chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
         }
       }
       break;
@@ -529,11 +629,11 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     case DIV_CMD_STD_NOISE_MODE:
       chan[c.chan].duty=c.value&127;
       chan[c.chan].virtual_duty=(unsigned short)chan[c.chan].duty << 5;
-      chWrite(c.chan,SGU_REG_DUTY,chan[c.chan].duty);
+      chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
       break;
     case DIV_CMD_C64_RESONANCE:
       chan[c.chan].res=c.value;
-      chWrite(c.chan,SGU_REG_RESON,chan[c.chan].res);
+      chWrite(c.chan,SGU1_CHN_RESON,chan[c.chan].res);
       break;
     case DIV_CMD_C64_FILTER_MODE:
       chan[c.chan].control=c.value&15;
@@ -543,15 +643,15 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       switch (c.value) {
         case 0:
           chan[c.chan].freqSweepP=(chan[c.chan].freqSweepP&0xff00)|c.value2;
-          chWrite(c.chan,SGU_REG_SWFREQ_L,chan[c.chan].freqSweepP&0xff);
+          chWrite(c.chan,SGU1_CHN_SWFREQ_SPD_L,chan[c.chan].freqSweepP&0xff);
           break;
         case 1:
           chan[c.chan].volSweepP=(chan[c.chan].volSweepP&0xff00)|c.value2;
-          chWrite(c.chan,SGU_REG_SWVOL_L,chan[c.chan].volSweepP&0xff);
+          chWrite(c.chan,SGU1_CHN_SWVOL_SPD_L,chan[c.chan].volSweepP&0xff);
           break;
         case 2:
           chan[c.chan].cutSweepP=(chan[c.chan].cutSweepP&0xff00)|c.value2;
-          chWrite(c.chan,SGU_REG_SWCUT_L,chan[c.chan].cutSweepP&0xff);
+          chWrite(c.chan,SGU1_CHN_SWCUT_SPD_L,chan[c.chan].cutSweepP&0xff);
           break;
       }
       break;
@@ -560,15 +660,15 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       switch (c.value) {
         case 0:
           chan[c.chan].freqSweepP=(chan[c.chan].freqSweepP&0xff)|(c.value2<<8);
-          chWrite(c.chan,SGU_REG_SWFREQ_H,chan[c.chan].freqSweepP>>8);
+          chWrite(c.chan,SGU1_CHN_SWFREQ_SPD_H,chan[c.chan].freqSweepP>>8);
           break;
         case 1:
           chan[c.chan].volSweepP=(chan[c.chan].volSweepP&0xff)|(c.value2<<8);
-          chWrite(c.chan,SGU_REG_SWVOL_H,chan[c.chan].volSweepP>>8);
+          chWrite(c.chan,SGU1_CHN_SWVOL_SPD_H,chan[c.chan].volSweepP>>8);
           break;
         case 2:
           chan[c.chan].cutSweepP=(chan[c.chan].cutSweepP&0xff)|(c.value2<<8);
-          chWrite(c.chan,SGU_REG_SWCUT_H,chan[c.chan].cutSweepP>>8);
+          chWrite(c.chan,SGU1_CHN_SWCUT_SPD_H,chan[c.chan].cutSweepP>>8);
           break;
       }
       break;
@@ -577,15 +677,15 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       switch (c.value) {
         case 0:
           chan[c.chan].freqSweepB=c.value2;
-          chWrite(c.chan,SGU_REG_SWFREQ_BND,chan[c.chan].freqSweepB);
+          chWrite(c.chan,SGU1_CHN_SWFREQ_BND,chan[c.chan].freqSweepB);
           break;
         case 1:
           chan[c.chan].volSweepB=c.value2;
-          chWrite(c.chan,SGU_REG_SWVOL_BND,chan[c.chan].volSweepB);
+          chWrite(c.chan,SGU1_CHN_SWVOL_BND,chan[c.chan].volSweepB);
           break;
         case 2:
           chan[c.chan].cutSweepB=c.value2;
-          chWrite(c.chan,SGU_REG_SWCUT_BND,chan[c.chan].cutSweepB);
+          chWrite(c.chan,SGU1_CHN_SWCUT_BND,chan[c.chan].cutSweepB);
           break;
       }
       break;
@@ -595,17 +695,17 @@ int DivPlatformSGU::dispatch(DivCommand c) {
         case 0:
           chan[c.chan].freqSweepV=c.value2;
           chan[c.chan].freqSweep=(c.value2>0);
-          chWrite(c.chan,SGU_REG_SWFREQ_AMT,chan[c.chan].freqSweepV);
+          chWrite(c.chan,SGU1_CHN_SWFREQ_AMT,chan[c.chan].freqSweepV);
           break;
         case 1:
           chan[c.chan].volSweepV=c.value2;
           chan[c.chan].volSweep=(c.value2>0);
-          chWrite(c.chan,SGU_REG_SWVOL_AMT,chan[c.chan].volSweepV);
+          chWrite(c.chan,SGU1_CHN_SWVOL_AMT,chan[c.chan].volSweepV);
           break;
         case 2:
           chan[c.chan].cutSweepV=c.value2;
           chan[c.chan].cutSweep=(c.value2>0);
-          chWrite(c.chan,SGU_REG_SWCUT_AMT,chan[c.chan].cutSweepV);
+          chWrite(c.chan,SGU1_CHN_SWCUT_AMT,chan[c.chan].cutSweepV);
           break;
       }
       writeControlUpper(c.chan);
@@ -614,23 +714,23 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     case DIV_CMD_SU_SYNC_PERIOD_LOW:
       chan[c.chan].syncTimer=(chan[c.chan].syncTimer&0xff00)|c.value;
       chan[c.chan].timerSync=(chan[c.chan].syncTimer>0);
-      chWrite(c.chan,SGU_REG_RESTIMER_L,chan[c.chan].syncTimer&0xff);
-      chWrite(c.chan,SGU_REG_RESTIMER_H,chan[c.chan].syncTimer>>8);
+      chWrite(c.chan,SGU1_CHN_RESTIMER_L,chan[c.chan].syncTimer&0xff);
+      chWrite(c.chan,SGU1_CHN_RESTIMER_H,chan[c.chan].syncTimer>>8);
       writeControlUpper(c.chan);
       break;
     case DIV_CMD_SU_SYNC_PERIOD_HIGH:
       chan[c.chan].syncTimer=(chan[c.chan].syncTimer&0xff)|(c.value<<8);
       chan[c.chan].timerSync=(chan[c.chan].syncTimer>0);
-      chWrite(c.chan,SGU_REG_RESTIMER_L,chan[c.chan].syncTimer&0xff);
-      chWrite(c.chan,SGU_REG_RESTIMER_H,chan[c.chan].syncTimer>>8);
+      chWrite(c.chan,SGU1_CHN_RESTIMER_L,chan[c.chan].syncTimer&0xff);
+      chWrite(c.chan,SGU1_CHN_RESTIMER_H,chan[c.chan].syncTimer>>8);
       writeControlUpper(c.chan);
       break;
     case DIV_CMD_C64_FINE_CUTOFF:
       chan[c.chan].baseCutoff=c.value<<4;
       if (!chan[c.chan].std.ex1.has) {
         chan[c.chan].cutoff=chan[c.chan].baseCutoff;
-        chWrite(c.chan,SGU_REG_CUTOFF_L,chan[c.chan].cutoff&0xff);
-        chWrite(c.chan,SGU_REG_CUTOFF_H,chan[c.chan].cutoff>>8);
+        chWrite(c.chan,SGU1_CHN_CUTOFF_L,chan[c.chan].cutoff&0xff);
+        chWrite(c.chan,SGU1_CHN_CUTOFF_H,chan[c.chan].cutoff>>8);
       }
       break;
     case DIV_CMD_NOTE_PORTA: {
@@ -658,7 +758,7 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     }
     case DIV_CMD_PANNING:
       chan[c.chan].pan=parent->convertPanSplitToLinearLR(c.value,c.value2,254)-127;
-      chWrite(c.chan,SGU_REG_PAN,chan[c.chan].pan);
+      chWrite(c.chan,SGU1_CHN_PAN,chan[c.chan].pan);
       break;
     case DIV_CMD_SAMPLE_POS:
       chan[c.chan].hasOffset=c.value;
@@ -851,13 +951,13 @@ void DivPlatformSGU::forceIns() {
     chan[i].insChanged=true;
     chan[i].freqChanged=true;
 
-    chWrite(i,SGU_REG_PAN,chan[i].pan);
+    chWrite(i,SGU1_CHN_PAN,chan[i].pan);
     writeControl(i);
     writeControlUpper(i);
-    chWrite(i,SGU_REG_DUTY,chan[i].duty);
-    chWrite(i,SGU_REG_CUTOFF_L,chan[i].cutoff&0xff);
-    chWrite(i,SGU_REG_CUTOFF_H,chan[i].cutoff>>8);
-    chWrite(i,SGU_REG_RESON,chan[i].res);
+    chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+    chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+    chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
+    chWrite(i,SGU1_CHN_RESON,chan[i].res);
 
     for (int o=0; o<4; o++) {
       applyOpRegs(i,o);
@@ -902,12 +1002,12 @@ void DivPlatformSGU::reset() {
     chan[i].std.setEngine(parent);
     sgu->muted[i]=false;
 
-    chWrite(i,SGU_REG_VOL,chan[i].outVol);
-    chWrite(i,SGU_REG_PAN,chan[i].pan);
-    chWrite(i,SGU_REG_DUTY,chan[i].duty);
-    chWrite(i,SGU_REG_CUTOFF_L,chan[i].cutoff&0xff);
-    chWrite(i,SGU_REG_CUTOFF_H,chan[i].cutoff>>8);
-    chWrite(i,SGU_REG_RESON,chan[i].res);
+    chWrite(i,SGU1_CHN_VOL,chan[i].outVol);
+    chWrite(i,SGU1_CHN_PAN,chan[i].pan);
+    chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+    chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+    chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
+    chWrite(i,SGU1_CHN_RESON,chan[i].res);
     writeControl(i);
     writeControlUpper(i);
 
