@@ -76,7 +76,7 @@
 ### Operator bit layout
 
 ```
-R0  [7]TRM  [6]VIB  [5]FIX  [4]---  [3:0]MUL
+R0  [7]TRM  [6]VIB  [5]FIX  [4]---  [3:0]MULT
 R1  [7:6]KSL        [5:0]TL(0..63)
 
 R2  [7:4]AR_lo4                     [3:0]DR_lo4
@@ -92,15 +92,49 @@ R7  [7:5]OUT                [4]AR_msb [3]DR_msb [2:0]WAVE
 
 ### Assembled parameter widths (OPL/ESFM-like; OPN/OPM-like where it matters)
 
-* **AR** = `(AR_msb<<4) | AR_lo4`  → 0..31 (5-bit)
-* **DR (D1R)** = `(DR_msb<<4) | DR_lo4` → 0..31 (5-bit)
-* **SR (D2R)** = `SR` → 0..31 (5-bit)
+* **AR** = `(AR_msb<<4) | AR_lo4`  → 0..31 (5-bit, OPN/OPM-style)
+* **DR (D1R)** = `(DR_msb<<4) | DR_lo4` → 0..31 (5-bit, OPN/OPM-style)
+* **SR (D2R)** = `SR` → 0..31 (5-bit, OPN/OPM-style)
 * **SL (D1L)** = `SL` → 0..15 (4-bit)
 * **RR** = `RR` → 0..15 (4-bit)
-* **TL** = `(TL_msb<<6) | TL_lo6` → 0..127 (7-bit, closer to OPN/OPM feel)
+* **TL** = `(TL_msb<<6) | TL_lo6` → 0..127 (7-bit, OPN/OPM-style)
+* **KSL** = `KSL` → 0..3 (2-bit, OPL-style)
+* **KSR** = `KSR` → 0..3 (2-bit, OPN-style)
+* **DT** = `DT` → 0..7 (3-bit, OPN/OPM-style)
+* **MUL** = `MUL` → 0..15 (4-bit, OPL-style; 0=0.5x, 1..15=1x..15x)
+* **MOD** = `MOD` → 0..7 (3-bit; phase modulation from previous operator)
+* **OUT** = `OUT` → 0..7 (3-bit; direct output level to channel mix)
 
 This keeps OPL-style packing in R2/R3 intact (low nibbles),
 but upgrades AR/DR to 5-bit and adds true SR.
+
+### Key differences vs OPL/OPM/ESFM
+
+- Envelopes: AR/DR/SR/SL/RR structure (like OPN/OPM), vs OPL's AR/DR/SL+RR.
+  For better percussive envelope shaping.
+- TL is 7-bit (0..127) vs OPL's 6-bit (0..63), for finer attenuation steps.
+- KSR is 2-bit (0..3) vs OPL's 1-bit (0/1), for better rate scaling.
+- MUL is OPL-style (0=0.5x, 1..15=1x..15x) vs OPN/OPM's (1..16=1x..16x).
+- DT is 3-bit (0..7) vs OPL's 2-bit (0..3), for finer detune steps.
+- SR (D2R) is explicit 5-bit (0..31) vs OPL's implicit (0 or 15).
+- WAVE selection is per-operator (3-bit) vs OPL's global per-channel (2-bit).
+- MOD/OUT routing like ESFM (per-operator) vs OPL's fixed 2-op algorithms.
+
+### Tremolo/Vibrato
+
+- Tremolo (AM) and Vibrato (PM) enable bits are per-operator (R0[7], R0[6])
+  vs OPL's per-channel (R0[7:6]).
+- Tremolo depth is global per-channel (like OPL).
+- Vibrato depth is global per-channel (like OPL).
+- Hard sync and ring modulation are per-operator (R6[5], R6[4]).
+
+### Fixed frequency mode (OPZ-like)
+
+- Enabled by FIX bit (R0[5]) per-operator.
+- In fixed mode, operator ignores channel base frequency.
+- Fixed frequency is derived from MUL and DT reinterpreted:
+  `freq16 = (8 + (MUL * 247 + 7) / 15) << DT`  (range ≈ 8..32640).
+- In fixed mode, DT does not act as detune.
 
 ---
 
