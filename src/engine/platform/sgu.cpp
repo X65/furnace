@@ -298,8 +298,8 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
         // AR/DR need shifting: ESFM uses 4-bit rates, SGU expects 5-bit
         fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
         fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
-        // Convert EGT flag to D2R rate
-        fm.op[o].d2r = fm.op[o].egt ? 0 : 31;
+        // Convert EGT flag to SR rate (1-bit -> 0/0x0f)
+        fm.op[o].d2r = fm.op[o].egt ? 0 : 0x0f;
       }
       break;
     case DIV_INS_OPL:
@@ -307,8 +307,8 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
         // AR/DR need shifting from 4-bit to 5-bit
         fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
         fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
-        // Convert EGT flag to D2R rate
-        fm.op[o].d2r = fm.op[o].egt ? 0 : 31;
+        // Convert EGT flag to SR rate (1-bit -> 0/0x0f)
+        fm.op[o].d2r = fm.op[o].egt ? 0 : 0x0f;
       }
       break;
     case DIV_INS_OPLL:
@@ -316,8 +316,8 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
         // AR/DR need shifting from 4-bit to 5-bit
         fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
         fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
-        // Convert Sustain flag to D2R rate
-        fm.op[o].d2r = fm.op[o].sus ? 0 : 31;
+        // Convert EGT flag to SR rate (1-bit -> 0/0x0f)
+        fm.op[o].d2r = fm.op[o].egt ? 0 : 0x0f;
         // Convert KSR and apply global AMS/FMS
         fm.op[o].rs=(fm.op[o].ksr&1)?3:0;
         fm.op[o].dam=fm.ams&1;
