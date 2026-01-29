@@ -51,6 +51,18 @@ void appendOpBytes(String& out, const unsigned char* pool, int size, int base, i
   }
 }
 
+void appendOpBytesByAddr(String& out, const unsigned char* pool, int size, const int* addrs, int count) {
+  for (int i = 0; i < count; i++) {
+    if (i) out.push_back(' ');
+    int idx = addrs[i];
+    if (pool && idx >= 0 && idx < size) {
+      appendHexByte(out, pool[idx]);
+    } else {
+      out.append("??");
+    }
+  }
+}
+
 String buildSguEsfmOpCompare(const unsigned char* sguPool, int sguSize,
                              const unsigned char* esfmPool, int esfmSize,
                              int sguChan, int esfmChan) {
@@ -71,6 +83,37 @@ String buildSguEsfmOpCompare(const unsigned char* sguPool, int sguSize,
   }
   return out;
 }
+
+String buildSguOpmOpCompare(const unsigned char* sguPool, int sguSize,
+                            const unsigned char* opmPool, int opmSize,
+                            int sguChan, int opmChan) {
+  String out;
+  out.reserve(512);
+  out += "OP  | SGU r0 r1 r2 r3 r4 r5 r6 r7 | OPM r0 r1 r2 r3 r4 r5 -- --\n";
+  out += "----+-----------------------------+--------------------------------\n";
+  for (int op = 0; op < 4; op++) {
+    out += "OP";
+    out.push_back('0' + op);
+    out += " |     ";
+    int sguBase = sguChan * kSguChanStride + op * kSguOpRegs;
+    appendOpBytes(out, sguPool, sguSize, sguBase, kSguOpRegs);
+    out += " |     ";
+    int opBase = op * 8;
+    int opmAddrs[8] = {
+      0x40 + opBase + opmChan,
+      0x60 + opBase + opmChan,
+      0x80 + opBase + opmChan,
+      0xA0 + opBase + opmChan,
+      0xC0 + opBase + opmChan,
+      0xE0 + opBase + opmChan,
+      -1,
+      -1
+    };
+    appendOpBytesByAddr(out, opmPool, opmSize, opmAddrs, kSguOpRegs);
+    out.push_back('\n');
+  }
+  return out;
+}
 } // namespace
 
 void FurnaceGUI::drawRegView() {
@@ -81,24 +124,34 @@ void FurnaceGUI::drawRegView() {
   }
   if (!regViewOpen) return;
   if (ImGui::Begin("Register View",&regViewOpen,globalWinFlags,_("Register View"))) {
-    if (ImGui::CollapsingHeader(_("SGU/ESFM ch0 operator compare"), ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader(_("SGU/ESFM/OPM ch0 operator compare"), ImGuiTreeNodeFlags_DefaultOpen)) {
       static String sguEsfmDump;
       const int sguSys = findSystemIndex(e->song, DIV_SYSTEM_SGU);
       const int esfmSys = findSystemIndex(e->song, DIV_SYSTEM_ESFM);
-      if (sguSys < 0 || esfmSys < 0) {
-        ImGui::TextUnformatted(_("Add both SGU-1 and ESFM chips to compare register dumps."));
+      const int opmSys = findSystemIndex(e->song, DIV_SYSTEM_YM2151);
+      if (sguSys < 0 || (esfmSys < 0 && opmSys < 0)) {
+        ImGui::TextUnformatted(_("Add SGU-1 and ESFM or OPM chips to compare register dumps."));
       } else {
         int sguSize = 0;
         int esfmSize = 0;
+        int opmSize = 0;
         int sguDepth = 8;
         int esfmDepth = 8;
+        int opmDepth = 8;
         unsigned char* sguPool = e->getRegisterPool(sguSys, sguSize, sguDepth);
-        unsigned char* esfmPool = e->getRegisterPool(esfmSys, esfmSize, esfmDepth);
-        if (sguPool == NULL || esfmPool == NULL || sguDepth != 8 || esfmDepth != 8) {
-          ImGui::TextUnformatted(_("Register pool unavailable for SGU/ESFM."));
+        unsigned char* esfmPool = (esfmSys >= 0) ? e->getRegisterPool(esfmSys, esfmSize, esfmDepth) : NULL;
+        unsigned char* opmPool = (opmSys >= 0) ? e->getRegisterPool(opmSys, opmSize, opmDepth) : NULL;
+        const bool useEsfm = (esfmSys >= 0 && esfmPool != NULL && esfmDepth == 8);
+        const bool useOpm = (!useEsfm && opmSys >= 0 && opmPool != NULL && opmDepth == 8);
+        if (sguPool == NULL || sguDepth != 8 || (!useEsfm && !useOpm)) {
+          ImGui::TextUnformatted(_("Register pool unavailable for SGU/ESFM/OPM."));
         } else {
           if (ImGui::Button(_("Refresh dump"))) {
-            sguEsfmDump = buildSguEsfmOpCompare(sguPool, sguSize, esfmPool, esfmSize, 0, 0);
+            if (useEsfm) {
+              sguEsfmDump = buildSguEsfmOpCompare(sguPool, sguSize, esfmPool, esfmSize, 0, 0);
+            } else {
+              sguEsfmDump = buildSguOpmOpCompare(sguPool, sguSize, opmPool, opmSize, 0, 0);
+            }
           }
           ImGui::SameLine();
           ImGui::BeginDisabled(sguEsfmDump.empty());
@@ -107,7 +160,11 @@ void FurnaceGUI::drawRegView() {
           }
           ImGui::EndDisabled();
           ImGui::SameLine();
-          ImGui::Text(_("(SGU idx %d, ESFM idx %d)"), sguSys + 1, esfmSys + 1);
+          if (useEsfm) {
+            ImGui::Text(_("(SGU idx %d, ESFM idx %d)"), sguSys + 1, esfmSys + 1);
+          } else {
+            ImGui::Text(_("(SGU idx %d, OPM idx %d)"), sguSys + 1, opmSys + 1);
+          }
           ImGui::BeginChild("SguEsfmDump", ImVec2(0.0f, 120.0f * dpiScale), true);
           ImGui::PushFont(patFont);
           ImGui::TextUnformatted(sguEsfmDump.empty() ? _("(click Refresh dump)") : sguEsfmDump.c_str());
