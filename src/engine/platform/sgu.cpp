@@ -925,6 +925,16 @@ void DivPlatformSGU::tick(bool sysTick) {
     }
 
     if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
+      // Key-off first (before frequency writes) to create edge transition
+      if (chan[i].keyOn || chan[i].keyOff) {
+        chan[i].key=false;
+        writeControl(i);
+        if (chan[i].keyOff && chan[i].pcm) {
+          chWrite(i,SGU1_CHN_VOL,0);
+        }
+        chan[i].keyOff=false;
+      }
+
       // baseFreq starts as a semitone note (Furnace pitch table) and becomes SID-style freq16
       // via NOTE_FREQUENCY using a 1 MHz clock. calcFreq keeps everything in freq16, and we
       // write the result directly to SGU channel .freq (SID semantics).
@@ -952,7 +962,9 @@ void DivPlatformSGU::tick(bool sysTick) {
       chWrite(i,SGU1_CHN_FREQ_L,chan[i].freq&0xff);
       chWrite(i,SGU1_CHN_FREQ_H,chan[i].freq>>8);
 
-      if (chan[i].keyOn || chan[i].keyOff) {
+      // Key-on last (after frequency writes) to start new ADSR cycle
+      if (chan[i].keyOn) {
+        chan[i].key=true;
         writeControl(i);
       }
 
@@ -983,12 +995,7 @@ void DivPlatformSGU::tick(bool sysTick) {
         }
       }
 
-      if (chan[i].keyOff && chan[i].pcm) {
-        chWrite(i,SGU1_CHN_VOL,0);
-      }
-
       if (chan[i].keyOn) chan[i].keyOn=false;
-      if (chan[i].keyOff) chan[i].keyOff=false;
       chan[i].freqChanged=false;
     }
   }
