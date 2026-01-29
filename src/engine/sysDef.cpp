@@ -311,7 +311,7 @@ const char* DivEngine::getChannelName(int chan) {
   if (chan<0 || chan>song.chans) return "??";
   if (!curSubSong->chanName[chan].empty()) return curSubSong->chanName[chan].c_str();
   if (song.dispatchChanOfChan[chan]<0) return "??";
-  
+
   return song.chanDef[chan].name.c_str();
 }
 
@@ -319,7 +319,7 @@ const char* DivEngine::getChannelShortName(int chan) {
   if (chan<0 || chan>song.chans) return "??";
   if (!curSubSong->chanShortName[chan].empty()) return curSubSong->chanShortName[chan].c_str();
   if (song.dispatchChanOfChan[chan]<0) return "??";
-  
+
   return song.chanDef[chan].shortName.c_str();
 }
 
@@ -2271,17 +2271,16 @@ void DivEngine::registerSystems() {
         DIV_CH_FM,
         {
           DIV_INS_ESFM,
+          DIV_INS_AMIGA,
           DIV_INS_FM,
           DIV_INS_OPM,
           DIV_INS_OPL,
-          DIV_INS_OPL_DRUMS,
           DIV_INS_OPLL,
           DIV_INS_OPZ,
           DIV_INS_SU,
           DIV_INS_C64,
           DIV_INS_SID2,
           DIV_INS_POKEY,
-          DIV_INS_AMIGA
         }
       );
     }),
@@ -2564,7 +2563,7 @@ void DivEngine::registerSystems() {
 
   sysDefs[DIV_SYSTEM_ESFM]=new DivSysDef(
     _("ESS ES1xxx series (ESFM)"), NULL, 0xd1, 0, 18, 18, 18,
-    true, false, 0, false, 0, 0, 0, 
+    true, false, 0, false, 0, 0, 0,
     _("a unique FM synth featured in PC sound cards.\nbased on the OPL3 design, but with lots of its features extended."),
     DivChanDefFunc([](unsigned short ch) -> DivChanDef {
       return DivChanDef(
@@ -2579,10 +2578,10 @@ void DivEngine::registerSystems() {
     },
     fmESFMPostEffectHandlerMap
   );
-  
+
   sysDefs[DIV_SYSTEM_POWERNOISE]=new DivSysDef(
     _("PowerNoise"), NULL, 0xd4, 0, 4, 4, 4,
-    false, false, 0, false, 0, 0, 0, 
+    false, false, 0, false, 0, 0, 0,
     _("a fantasy sound chip designed by jvsTSX and The Beesh-Spweesh!\nused in the Hexheld fantasy console."),
     DivChanDefFunc({
       DivChanDef(_("Noise 1"), "N1", DIV_CH_NOISE, DIV_INS_POWERNOISE),
@@ -2621,7 +2620,7 @@ void DivEngine::registerSystems() {
       {0x16, {DIV_CMD_DAVE_CLOCK_DIV, _("16xx: Set clock divider (0: /2; 1: /3)")}},
     }
   );
-  
+
   sysDefs[DIV_SYSTEM_GBA_DMA]=new DivSysDef(
     _("Game Boy Advance DMA Sound"), NULL, 0xd7, 0, 2, 2, 2,
     false, true, 0, false, 1U<<DIV_SAMPLE_DEPTH_8BIT, 0, 256,
@@ -2715,16 +2714,16 @@ void DivEngine::registerSystems() {
     }
   );
 
-  sysDefs[DIV_SYSTEM_SID2]=new DivSysDef(   
+  sysDefs[DIV_SYSTEM_SID2]=new DivSysDef(
     _("SID2"), NULL, 0xf0, 0, 3, 3, 3,
     false, true, 0, false, 0, 0, 0,
     _("a fantasy sound chip created by LTVA. it is similar to the SID chip, but with many of its problems fixed."),
     DivChanDefFunc(simpleChanDef<DIV_CH_NOISE,DIV_INS_SID2>),
-    {}, 
+    {},
     SID2PostEffectHandlerMap
   );
 
-  sysDefs[DIV_SYSTEM_SID3]=new DivSysDef(   
+  sysDefs[DIV_SYSTEM_SID3]=new DivSysDef(
     _("SID3"), NULL, 0xf5, 0, 7, 7, 7,
     false, true, 0, false, (1U<<DIV_SAMPLE_DEPTH_8BIT)|(1U<<DIV_SAMPLE_DEPTH_16BIT), 256, 256,
     _("a fantasy sound chip created by LTVA. it is a big rework of SID chip with probably too many features added on top."),
@@ -2744,7 +2743,7 @@ void DivEngine::registerSystems() {
         DIV_INS_SID3
       );
     }),
-    {}, 
+    {},
     SID3PostEffectHandlerMap
   );
 

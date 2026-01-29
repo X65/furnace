@@ -259,38 +259,38 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 // -----------------------------------------------------------------------------
 // Channel register set (per channel)
 // -----------------------------------------------------------------------------
-#define SGU1_CHAN_FREQ_LO         (0x00)
-#define SGU1_CHAN_FREQ_HI         (0x01)
-#define SGU1_CHAN_VOL             (0x02)
-#define SGU1_CHAN_PAN             (0x03)
-#define SGU1_CHAN_FLAGS0          (0x04)
-#define SGU1_CHAN_FLAGS1          (0x05)
-#define SGU1_CHAN_CUTOFF_LO       (0x06)
-#define SGU1_CHAN_CUTOFF_HI       (0x07)
-#define SGU1_CHAN_DUTY            (0x08)
-#define SGU1_CHAN_RESON           (0x09)
-#define SGU1_CHAN_PCMPOS_LO       (0x0A)
-#define SGU1_CHAN_PCMPOS_HI       (0x0B)
-#define SGU1_CHAN_PCMBND_LO       (0x0C)
-#define SGU1_CHAN_PCMBND_HI       (0x0D)
-#define SGU1_CHAN_PCMRST_LO       (0x0E)
-#define SGU1_CHAN_PCMRST_HI       (0x0F)
-#define SGU1_CHAN_SWFREQ_SPEED_LO (0x10)
-#define SGU1_CHAN_SWFREQ_SPEED_HI (0x11)
-#define SGU1_CHAN_SWFREQ_AMT      (0x12)
-#define SGU1_CHAN_SWFREQ_BOUND    (0x13)
-#define SGU1_CHAN_SWVOL_SPEED_LO  (0x14)
-#define SGU1_CHAN_SWVOL_SPEED_HI  (0x15)
-#define SGU1_CHAN_SWVOL_AMT       (0x16)
-#define SGU1_CHAN_SWVOL_BOUND     (0x17)
-#define SGU1_CHAN_SWCUT_SPEED_LO  (0x18)
-#define SGU1_CHAN_SWCUT_SPEED_HI  (0x19)
-#define SGU1_CHAN_SWCUT_AMT       (0x1A)
-#define SGU1_CHAN_SWCUT_BOUND     (0x1B)
-#define SGU1_CHAN_SPECIAL1C       (0x1C)
-#define SGU1_CHAN_SPECIAL1D       (0x1D)
-#define SGU1_CHAN_RESTIMER_LO     (0x1E)
-#define SGU1_CHAN_RESTIMER_HI     (0x1F)
+#define SGU1_CHN_FREQ_L       (0x00)
+#define SGU1_CHN_FREQ_H       (0x01)
+#define SGU1_CHN_VOL          (0x02)
+#define SGU1_CHN_PAN          (0x03)
+#define SGU1_CHN_FLAGS0       (0x04)
+#define SGU1_CHN_FLAGS1       (0x05)
+#define SGU1_CHN_CUTOFF_L     (0x06)
+#define SGU1_CHN_CUTOFF_H     (0x07)
+#define SGU1_CHN_DUTY         (0x08)
+#define SGU1_CHN_RESON        (0x09)
+#define SGU1_CHN_PCM_POS_L    (0x0A)
+#define SGU1_CHN_PCM_POS_H    (0x0B)
+#define SGU1_CHN_PCM_END_L    (0x0C)
+#define SGU1_CHN_PCM_END_H    (0x0D)
+#define SGU1_CHN_PCM_RST_L    (0x0E)
+#define SGU1_CHN_PCM_RST_H    (0x0F)
+#define SGU1_CHN_SWFREQ_SPD_L (0x10)
+#define SGU1_CHN_SWFREQ_SPD_H (0x11)
+#define SGU1_CHN_SWFREQ_AMT   (0x12)
+#define SGU1_CHN_SWFREQ_BND   (0x13)
+#define SGU1_CHN_SWVOL_SPD_L  (0x14)
+#define SGU1_CHN_SWVOL_SPD_H  (0x15)
+#define SGU1_CHN_SWVOL_AMT    (0x16)
+#define SGU1_CHN_SWVOL_BND    (0x17)
+#define SGU1_CHN_SWCUT_SPD_L  (0x18)
+#define SGU1_CHN_SWCUT_SPD_H  (0x19)
+#define SGU1_CHN_SWCUT_AMT    (0x1A)
+#define SGU1_CHN_SWCUT_BND    (0x1B)
+#define SGU1_CHN_RESTIMER_L   (0x1C)
+#define SGU1_CHN_RESTIMER_H   (0x1D)
+#define SGU1_CHN_SPECIAL1     (0x1E)
+#define SGU1_CHN_SPECIAL2     (0x1F)
 
 // channel control bits
 #define SGU1_FLAGS0_CTL_KEYON     (1 << 0)
@@ -332,7 +332,7 @@ extern "C" {
 //       1: taps 2,3     (~31 states)
 //       2: taps 0,2,3   (different timbre)
 //       3: taps 0,2,3,5 (max length ~63 states)
-typedef enum
+typedef enum : uint8_t
 {
     SGU_WAVE_SINE = 0,
     SGU_WAVE_TRIANGLE = 1,
@@ -344,8 +344,8 @@ typedef enum
     SGU_WAVE_XOR_TRIANGLE = 7, // reserved (unimplemented)
 } sgu_waveform_t;
 
-// various envelope states
-enum envelope_state : uint32_t
+// Envelope states
+enum envelope_state : uint8_t
 {
     SGU_EG_ATTACK = 0,
     SGU_EG_DECAY = 1,
