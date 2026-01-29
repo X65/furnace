@@ -294,13 +294,19 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
   /* Convert ADSR envelope parameters */
   switch (ins->type) {
     case DIV_INS_ESFM:
+      {
+        // AR/DR need shifting: ESFM uses 4-bit rates, SGU expects 5-bit
+        fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
+        fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
+        // Convert EGT flag to D2R rate
+        fm.op[o].d2r = fm.op[o].egt ? 0 : 31;
+      }
+      break;
     case DIV_INS_OPL:
       {
         // AR/DR need shifting from 4-bit to 5-bit
         fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
         fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
-        // TL needs shifting from 6-bit to 7-bit
-        fm.op[o].tl=(unsigned char)(((fm.op[o].tl & 0x3f) << 1) | 1);
         // Convert EGT flag to D2R rate
         fm.op[o].d2r = fm.op[o].egt ? 0 : 31;
       }
@@ -310,10 +316,6 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
         // AR/DR need shifting from 4-bit to 5-bit
         fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
         fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
-        // TL: modulator is 6-bit, carrier is 4-bit
-        fm.op[o].tl=(o==0)
-          ? (unsigned char)(((fm.op[o].tl & 0x3f) << 1) | 1)
-          : (unsigned char)(((fm.op[o].tl & 0x0f) << 3) | 0x04);
         // Convert Sustain flag to D2R rate
         fm.op[o].d2r = fm.op[o].sus ? 0 : 31;
         // Convert KSR and apply global AMS/FMS
@@ -764,6 +766,7 @@ void DivPlatformSGU::tick(bool sysTick) {
     chan[i].std.next();
     DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_ESFM);
     const bool isOpll=(ins->type==DIV_INS_OPLL);
+    const bool isEsfm=(ins->type==DIV_INS_ESFM);
     const bool isAmiga=(ins->type==DIV_INS_AMIGA || ins->amiga.useSample);
 
     if (sysTick) {
@@ -892,6 +895,9 @@ void DivPlatformSGU::tick(bool sysTick) {
           op.tl=(o==0)
             ? (unsigned char)(((m.tl.val & 0x3f) << 1) | 1)
             : (unsigned char)(((m.tl.val & 0x0f) << 3) | 0x04);
+        } else if (isEsfm) {
+          // ESFM TL is 6-bit; expand to 7-bit to match SGU/OPM semantics
+          op.tl=(unsigned char)(((m.tl.val & 0x3f) << 1) | 1);
         } else {
           op.tl=m.tl.val;
         }

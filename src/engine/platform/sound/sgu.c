@@ -815,14 +815,11 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                         const uint8_t mod = SGU_OP6_MOD(op_data[6]);
                         const int16_t in_val = op ? ch_state->value[op - 1]
                                         : (ch_state->op0_fb + ch_state->value[0]) >> (1 + 1);
-                        // OPM-style scaling: feedback uses >> (10 - fb), operator-to-operator uses >>1 at full depth.
-                        // SGU operator output is slightly hotter; scale by 1 bit to match OPM modulation depth.
-                        const int16_t in_mod = in_val >> 1;
+                        // ESFM-style scaling, adjusted for 16-bit SGU op output (ESFM uses ~13-bit).
+                        // Apply an extra 3-bit shift to match ESFM depth.
                         const int16_t p_mod = (mod == 0)
                                         ? 0
-                                        : (op == 0)
-                                            ? (in_mod >> (10 - mod))
-                                            : (in_mod >> (8 - mod));
+                                        : (in_val >> (10 - mod));
                 // compute the peak position for triangle/sine skew
                 uint8_t wpar = SGU_OP5_WPAR(op_data[5]);
                 uint16_t duty_peak = (uint16_t)(256 + (sgu->chan[ch].duty << 1)) & 0x1FF;
