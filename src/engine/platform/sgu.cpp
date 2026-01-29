@@ -216,13 +216,17 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
 
   /* Convert waveforms */
   switch (ins->type) {
+    case DIV_INS_OPM:
+      // OPM has no waveform select (sine only)
+      fm.op[o].ws=SGU_WAVE_SINE;
+      break;
     case DIV_INS_ESFM:
     case DIV_INS_FM:
-    case DIV_INS_OPM:
     case DIV_INS_OPL:
     case DIV_INS_OPLL:
     case DIV_INS_OPZ:
       fm.op[o].ws=oplToSguWaveformMap[fm.op[o].ws & 0x07];
+      break;
     default:
       break;
   }
@@ -263,7 +267,7 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
         FB - Reg 03, Bits 2-0: feedback amount for the modulator (operator 1), 0..7
   */
 
-  /* OPN2
+  /* OPN2 - difficult to map on linear ESFM with outs…
     Algorithm #	Layout	   Suggested uses
             0   1-2-3-4->  Distortion guitar, "high hat chopper" (?) bass
             1   1-+3-4->   Harp, PSG (programmable sound generator) sound
@@ -398,6 +402,20 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
           fm.op[o].tl=127;
           fm.op[o].enable=false;
         }
+      }
+      break;
+    default:
+      break;
+  }
+  /* Convert Detune parameters */
+  switch (ins->type) {
+    case DIV_INS_FM:
+    case DIV_INS_OPM:
+    case DIV_INS_OPZ:
+      {
+        // Map UI detune to Yamaha DT1 encoding for Yamaha FM chips (matches platform replayers).
+        static const unsigned char dtTable[8]={7,6,5,0,1,2,3,4};
+        fm.op[o].dt=dtTable[fm.op[o].dt&7];
       }
       break;
     default:
@@ -907,7 +925,7 @@ void DivPlatformSGU::tick(bool sysTick) {
       if (m.dam.had) { op.dam=m.dam.val; opDirty=true; }
       if (m.dvb.had) { op.dvb=m.dvb.val; opDirty=true; }
       if (m.ws.had && !isOpll) { op.ws=m.ws.val; opDirty=true; }
-      if (m.dt2.had && !isOpll) { opE.delay=m.dt2.val; opDirty=true; }
+      // DT2 not supported on SGU
       if (m.egt.had) {
         if (isOpll) {
           op.ssgEnv=(op.ssgEnv&7)|((m.egt.val&1)<<3);
@@ -1262,7 +1280,6 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     case DIV_CMD_FM_D2R:
     case DIV_CMD_FM_RR:
     case DIV_CMD_FM_DT:
-    case DIV_CMD_FM_DT2:
     case DIV_CMD_FM_RS:
     case DIV_CMD_FM_KSR:
     case DIV_CMD_FM_VIB:
@@ -1288,7 +1305,6 @@ int DivPlatformSGU::dispatch(DivCommand c) {
           case DIV_CMD_FM_D2R: op.d2r=c.value2&31; opDirty=true; break;
           case DIV_CMD_FM_RR: op.rr=c.value2&15; opDirty=true; break;
           case DIV_CMD_FM_DT: op.dt=c.value2&7; opDirty=true; break;
-          case DIV_CMD_FM_DT2: opE.delay=c.value2&7; opDirty=true; break;
           case DIV_CMD_FM_RS: op.rs=c.value2&3; opDirty=true; break;
           case DIV_CMD_FM_KSR: op.rs=c.value2&1; opDirty=true; break;
           case DIV_CMD_FM_SUS: op.sus=c.value2&1; break;
