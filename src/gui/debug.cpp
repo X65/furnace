@@ -558,7 +558,7 @@ void putDispatchChip(void* data, int type) {
         if (ch->chan[i].active) {
           activeMask|=(1u<<i);
         }
-        if (ch->chan[i].key) {
+        if (ch->chan[i].gate) {
           keyMask|=(1u<<i);
         }
         if (ch->chan[i].pcm) {
@@ -570,10 +570,10 @@ void putDispatchChip(void* data, int type) {
       ImGui::Text("* Masks:");
       ImGui::Text(" - mute: %.3x",muteMask);
       ImGui::Text(" - active: %.3x",activeMask);
-      ImGui::Text(" - key: %.3x",keyMask);
+      ImGui::Text(" - gate: %.3x",keyMask);
       ImGui::Text(" - pcm: %.3x",pcmMask);
       ImGui::Text("* Sample RAM:");
-      ImGui::Text(" - used: %d",(int)ch->sampleMemLen);
+      ImGui::Text(" - used: %d",(int)ch->chip.pcm_size);
       ImGui::Text(" - capacity: %d",(int)SGU_PCM_RAM_SIZE);
       ImGui::Text(" - entries: %d",(int)ch->memCompo.entries.size());
       ImGui::Text("* Write queue:");
@@ -1145,8 +1145,7 @@ void putDispatchChan(void* data, int chanNum, int type) {
       ImGui::Text("- res: %.2x",ch->res);
       ImGui::Text("- pan: %d",ch->pan);
       ImGui::Text("- sample: %d",ch->sample);
-      ImGui::Text("- ringMask: %.2x",ch->ringMask);
-      ImGui::Text("- syncMask: %.2x",ch->syncMask);
+      ImGui::TextColored(ch->gate?colorOn:colorOff,">> Gate");
       COMMON_CHAN_DEBUG_BOOL;
       ImGui::TextColored(ch->pcm?colorOn:colorOff,">> PCM");
       ImGui::TextColored(ch->pcmLoop?colorOn:colorOff,">> PCMLoop");

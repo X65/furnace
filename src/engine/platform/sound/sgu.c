@@ -361,6 +361,8 @@ static inline uint8_t compute_eg_rate(uint8_t op_data[], uint16_t ch_freq, enum 
         break;
     }
     uint32_t rate = effective_rate(rawrate, ksrval);
+    // Note: SGU EG runs at 16kHz (48kHz/3), OPN/ESFM at ~17.7kHz
+    // This results in ~10% slower envelope timing compared to ESFM
     return (uint8_t)rate;
 }
 
@@ -812,14 +814,14 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                 ch_state->phase_wrap[op] = (ch_state->phase[op] < phase_before);
 
                 // generate the FM sample for this channel
-                        const uint8_t mod = SGU_OP6_MOD(op_data[6]);
-                        const int16_t in_val = op ? ch_state->value[op - 1]
-                                        : (ch_state->op0_fb + ch_state->value[0]) >> (1 + 1);
-                        // ESFM-style scaling, adjusted for 16-bit SGU op output (ESFM uses ~13-bit).
-                        // Apply an extra 3-bit shift to match ESFM depth.
-                        const int16_t p_mod = (mod == 0)
-                                        ? 0
-                                        : (in_val >> (10 - mod));
+                // Feedback: >> 1 to average two samples, >> 1 to prevent runaway (ESFM design).
+                // ESFM uses 13-bit samples and >> (7 - mod); SGU uses 14-bit, thus >> (8 - mod).
+                const uint8_t mod = SGU_OP6_MOD(op_data[6]);
+                const int16_t in_val = op ? ch_state->value[op - 1]
+                                : (ch_state->op0_fb + ch_state->value[0]) >> (1 + 1);
+                const int16_t p_mod = (mod == 0)
+                                ? 0
+                                : (in_val >> (8 - mod));
                 // compute the peak position for triangle/sine skew
                 uint8_t wpar = SGU_OP5_WPAR(op_data[5]);
                 uint16_t duty_peak = (uint16_t)(256 + (sgu->chan[ch].duty << 1)) & 0x1FF;
@@ -832,6 +834,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                 // the full sin wave
                 //-------------------------------------------------
                 int32_t val = 0;
+
 
                 // skip work if the envelope is effectively off
                 if (ch_state->envelope_attenuation[op] < EG_QUIET)
@@ -1474,7 +1477,7 @@ void SGU_Write(struct SGU *sgu, uint16_t addr13, uint8_t data)
     ((uint8_t *)sgu->chan)[addr13] = data;
     const uint8_t channel = (addr13 / SGU_REGS_PER_CH) % SGU_CHNS;
     // handle writes to the keyon register(s)
-    fm_channel_keyonoff(&sgu->m_channel[channel], sgu->chan[channel].flags0 & SGU1_FLAGS0_CTL_KEYON);
+    fm_channel_keyonoff(&sgu->m_channel[channel], sgu->chan[channel].flags0 & SGU1_FLAGS0_CTL_GATE);
     // printf("SGU_Write: addr=0x%02X data=0x%02X -> (chan=%u)\n", addr13, data, channel);
 }
 

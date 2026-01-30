@@ -194,6 +194,18 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 #include <stdint.h>
 
 // -----------------------------------------------------------------------------
+// Operator register offsets (0-7 within each operator's 8-byte block)
+// -----------------------------------------------------------------------------
+#define SGU_OP_REG_MUL      0  // R0: [7]TRM [6]VIB [5]FIX [4]--- [3:0]MUL
+#define SGU_OP_REG_TL       1  // R1: [7:6]KSL [5:0]TL
+#define SGU_OP_REG_AR_DR    2  // R2: [7:4]AR_lo4 [3:0]DR_lo4
+#define SGU_OP_REG_SL_RR    3  // R3: [7:4]SL [3:0]RR
+#define SGU_OP_REG_DT_SR    4  // R4: [7:5]DT [4:0]SR
+#define SGU_OP_REG_DELAY    5  // R5: [7:5]DELAY [4:3]KSR [2:0]WPAR
+#define SGU_OP_REG_MOD      6  // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
+#define SGU_OP_REG_OUT_WAVE 7  // R7: [7:5]OUT [4]AR_msb [3]DR_msb [2:0]WAVE
+
+// -----------------------------------------------------------------------------
 // Operator bitfields
 // -----------------------------------------------------------------------------
 
@@ -327,7 +339,7 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 #define SGU1_CHN_SPECIAL2     (0x1F)
 
 // channel control bits
-#define SGU1_FLAGS0_CTL_KEYON     (1 << 0)
+#define SGU1_FLAGS0_CTL_GATE      (1 << 0)
 #define SGU1_FLAGS0_PCM_SHIFT     (3)
 #define SGU1_FLAGS0_PCM_MASK      (0x1 << SGU1_FLAGS0_PCM_SHIFT)
 #define SGU1_FLAGS0_CONTROL_SHIFT (4)
@@ -348,6 +360,8 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 // -----------------------------------------------------------------------------
 // Notes on behavior (implementation-level, not register-level)
 // - Operator envelope is AR -> DR toward SL, then SR while key held, then RR on key-off.
+// - Envelope timing: SGU EG runs at 16kHz (48kHz/3), vs OPN/ESFM at ~17.7kHz.
+//   This results in ~10% slower envelope timing compared to ESFM reference.
 // - MOD is phase modulation gain from previous op; op0 uses MOD as feedback gain.
 // - SYNC resets this op phase on previous op wrap; RING multiplies by previous op sign/value.
 // - FIX mode ignores channel pitch and derives a fixed frequency from MUL+DT.
