@@ -596,15 +596,18 @@ void DivPlatformSGU::tick(bool sysTick) {
         }
       }
 
-      if (chan[i].keyOn && !chan[i].hardReset) {
-        // Key on: First clear GATE to ensure 0→1 edge transition for envelope retrigger
+      if (chan[i].keyOn) {
         chan[i].gate=false;
         writeControl(i);
         chan[i].gate=true;
         writeControl(i);
       }
-      if (chan[i].keyOn) chan[i].keyOn=false;
-      if (chan[i].keyOff) chan[i].keyOff=false;
+      if (chan[i].keyOff) {
+        chan[i].gate=false;
+        writeControl(i);
+      }
+      chan[i].keyOn=false;
+      chan[i].keyOff=false;
       chan[i].freqChanged=false;
     }
   }

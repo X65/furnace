@@ -503,11 +503,6 @@ static inline void fm_channel_keyonoff(struct sgu_ch_state *self, bool on)
     for (uint8_t opnum = 0; opnum < SGU_OP_PER_CH; opnum++)
     {
         self->keyon_live[opnum] = on;
-        // When key-off is written, immediately clear key_state so that
-        // a subsequent key-on (even in the same sample period) will be
-        // detected as a 0->1 transition and retrigger the envelope.
-        if (!on)
-            self->key_state[opnum] = false;
     }
 }
 
