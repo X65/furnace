@@ -208,14 +208,23 @@ static inline uint32_t sgu_compute_phase_step(uint32_t freq16, uint32_t multipli
 
     // apply detune based on the keycode
     // DT1 -> small signed adjustment, scaled into step32 units
+    // OPM applies detune BEFORE multiplier: result = (base + detune) * multiplier
+    // This way detune effect scales with the multiplier, matching OPM behavior
     uint32_t keycode = keycode_from_freq16_32((uint16_t)freq16); // use *unmodulated* pitch
     int32_t adj = detune_adjustment(detune3, keycode);           // about -22..+22
 
-    // 11 = stronger, 12 = milder
+    // Scale detune adjustment to match SGU's phase_step range vs OPM's
+    // OPM phase_step range: ~41000-83000 (table values)
+    // SGU phase_step for middle-C: freq16*16000/3 => roughly similar magnitudes
+    // Use multiplicative scaling to convert adj to SGU units
     int64_t det_step = ((int64_t)phase_step * (int64_t)adj) >> 12;
 
-    // apply frequency multiplier (which is an x.1 value)
-    return ((phase_step * multiplier) >> 1) + (int16_t)det_step;
+    // Apply detune to phase_step BEFORE multiplier (like OPM does)
+    int64_t adjusted_step = (int64_t)phase_step + det_step;
+    if (adjusted_step < 0) adjusted_step = 0;
+
+    // Apply frequency multiplier (which is an x.1 value)
+    return ((uint32_t)adjusted_step * multiplier) >> 1;
 }
 
 // helper to apply KSR to the raw ADSR rate, ignoring ksr if the
@@ -822,6 +831,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                 const int16_t p_mod = (mod == 0)
                                 ? 0
                                 : (in_val >> (8 - mod));
+
                 // compute the peak position for triangle/sine skew
                 uint8_t wpar = SGU_OP5_WPAR(op_data[5]);
                 uint16_t duty_peak = (uint16_t)(256 + (sgu->chan[ch].duty << 1)) & 0x1FF;

@@ -281,7 +281,12 @@ void DivPlatformSGU::tick(bool sysTick) {
       } else {
         chan[i].outVol=((chan[i].vol&127)*MIN(127,chan[i].std.vol.val))>>7;
       }
-      chWrite(i,0x02,chan[i].outVol);
+      // ESFM instruments use half volume to match ESFM chip output levels
+      if (ins->type==DIV_INS_ESFM) {
+        chWrite(i,SGU1_CHN_VOL,chan[i].outVol>>1);
+      } else {
+        chWrite(i,SGU1_CHN_VOL,chan[i].outVol);
+      }
     }
 
     if (NEW_ARP_STRAT) {
@@ -731,134 +736,6 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
                 4-/
 
   */
-
-  /* Convert ADSR envelope parameters */
-  switch (ins->type) {
-    case DIV_INS_OPLL:
-      {
-        // Convert KSR and apply global AMS/FMS
-        fm.op[o].rs=(fm.op[o].ksr&1)?3:0;
-        fm.op[o].dam=fm.ams&1;
-        fm.op[o].dvb=fm.fms&1;
-      }
-      [[fallthrough]];
-      case DIV_INS_OPL:
-      case DIV_INS_ESFM:
-      {
-        // AR/DR need shifting: ESFM/OPL uses 4-bit rates, SGU expects 5-bit
-        fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
-        fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
-        // EGT=0: infinite sustain (SR=0), EGT=1: no sustain (SR=max, skip to release)
-        fm.op[o].d2r = fm.op[o].egt ? 0x1f : 0;
-      }
-      break;
-    case DIV_INS_FM:
-    case DIV_INS_OPM:
-    case DIV_INS_OPZ:
-      // OPN/OPM/OPZ already have 5-bit AR/DR and 7-bit TL - use as-is
-      break;
-    case DIV_INS_C64:
-      {
-        // C64 uses single carrier on op3; disable modulators
-        if (o==3) {
-          // Convert C64 ADSR (4-bit each) to FM envelope on carrier
-          const unsigned char decay=(ins->c64.s==15)?0:(ins->c64.d&0x0f);
-          fm.op[o].ar=(unsigned char)(((ins->c64.a & 0x0f) << 1) | 1);
-          fm.op[o].dr=(unsigned char)(((decay & 0x0f) << 1) | 1);
-          fm.op[o].sl=(unsigned char)(15-(ins->c64.s&0x0f));
-          fm.op[o].rr=ins->c64.r&0x0f;
-          fm.op[o].d2r=0;
-          fm.op[o].tl=0;
-          fm.op[o].mult=1;
-          fm.op[o].ws=sguC64Wave(ins->c64,false);
-        } else {
-          // Disable modulator operators
-          fm.op[o].tl=127;
-          fm.op[o].enable=false;
-        }
-      }
-      break;
-    case DIV_INS_SID2:
-      {
-        // SID2 uses single carrier on op3; disable modulators
-        if (o==3) {
-          const bool periodicNoise=(ins->sid2.noiseMode!=0);
-          const unsigned char decay=(ins->c64.s==15)?0:(ins->c64.d&0x0f);
-          fm.op[o].ar=(unsigned char)(((ins->c64.a & 0x0f) << 1) | 1);
-          fm.op[o].dr=(unsigned char)(((decay & 0x0f) << 1) | 1);
-          fm.op[o].sl=(unsigned char)(15-(ins->c64.s&0x0f));
-          fm.op[o].rr=ins->c64.r&0x0f;
-          fm.op[o].d2r=0;
-          fm.op[o].tl=0;
-          fm.op[o].mult=1;
-          fm.op[o].ws=sguC64Wave(ins->c64,periodicNoise);
-        } else {
-          fm.op[o].tl=127;
-          fm.op[o].enable=false;
-        }
-      }
-      break;
-    case DIV_INS_SU:
-      {
-        // SoundUnit uses single carrier on op3 with simple envelope
-        if (o==3) {
-          fm.op[o].ar=31;
-          fm.op[o].dr=0;
-          fm.op[o].sl=0;
-          fm.op[o].rr=15;
-          fm.op[o].d2r=0;
-          fm.op[o].tl=0;
-          fm.op[o].mult=1;
-          fm.op[o].ws=SGU_WAVE_SAWTOOTH;
-        } else {
-          fm.op[o].tl=127;
-          fm.op[o].enable=false;
-        }
-      }
-      break;
-    case DIV_INS_POKEY:
-      {
-        // POKEY uses single carrier on op3 with instant envelope
-        if (o==3) {
-          fm.op[o].ar=31;
-          fm.op[o].dr=0;
-          fm.op[o].sl=0;
-          fm.op[o].rr=15;
-          fm.op[o].d2r=0;
-          fm.op[o].tl=0;
-          fm.op[o].mult=1;
-          fm.op[o].ws=SGU_WAVE_PULSE;
-        } else {
-          fm.op[o].tl=127;
-          fm.op[o].enable=false;
-        }
-      }
-      break;
-    default:
-      break;
-  }
-
-  /* Convert Misc parameters */
-  switch (ins->type) {
-    case DIV_INS_OPZ:
-      {
-        // OPZ uses EGT flag for fixed frequency mode
-        esfm.op[o].fixed=fm.op[o].egt;
-      }
-      [[fallthrough]];
-    case DIV_INS_FM:
-    case DIV_INS_OPM:
-      {
-        // Map UI detune to Yamaha DT1 encoding for Yamaha FM chips (matches platform replayers).
-        static const unsigned char dtTable[8]={7,6,5,0,1,2,3,4};
-        fm.op[o].dt=dtTable[fm.op[o].dt&7];
-      }
-      break;
-    default:
-      break;
-  }
-  }
-
   /* Convert operator algorithms */
   switch (ins->type) {
     case DIV_INS_ESFM:
@@ -1032,6 +909,133 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
       break;
   }
 
+  /* Convert ADSR envelope parameters */
+  switch (ins->type) {
+    case DIV_INS_OPLL:
+      {
+        // Convert KSR and apply global AMS/FMS
+        fm.op[o].rs=(fm.op[o].ksr&1)?3:0;
+        fm.op[o].dam=fm.ams&1;
+        fm.op[o].dvb=fm.fms&1;
+      }
+      [[fallthrough]];
+      case DIV_INS_OPL:
+      case DIV_INS_ESFM:
+      {
+        // AR/DR need shifting: ESFM/OPL uses 4-bit rates, SGU expects 5-bit
+        fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
+        fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
+        // EGT=0: infinite sustain (SR=0), EGT=1: no sustain (SR=max, skip to release)
+        fm.op[o].d2r = fm.op[o].egt ? 0x1f : 0;
+      }
+      break;
+    case DIV_INS_FM:
+    case DIV_INS_OPM:
+    case DIV_INS_OPZ:
+      // OPN/OPM/OPZ already have 5-bit AR/DR and 7-bit TL - use as-is
+      break;
+    case DIV_INS_C64:
+      {
+        // C64 uses single carrier on op3; disable modulators
+        if (o==3) {
+          // Convert C64 ADSR (4-bit each) to FM envelope on carrier
+          const unsigned char decay=(ins->c64.s==15)?0:(ins->c64.d&0x0f);
+          fm.op[o].ar=(unsigned char)(((ins->c64.a & 0x0f) << 1) | 1);
+          fm.op[o].dr=(unsigned char)(((decay & 0x0f) << 1) | 1);
+          fm.op[o].sl=(unsigned char)(15-(ins->c64.s&0x0f));
+          fm.op[o].rr=ins->c64.r&0x0f;
+          fm.op[o].d2r=0;
+          fm.op[o].tl=0;
+          fm.op[o].mult=1;
+          fm.op[o].ws=sguC64Wave(ins->c64,false);
+        } else {
+          // Disable modulator operators
+          fm.op[o].tl=127;
+          fm.op[o].enable=false;
+        }
+      }
+      break;
+    case DIV_INS_SID2:
+      {
+        // SID2 uses single carrier on op3; disable modulators
+        if (o==3) {
+          const bool periodicNoise=(ins->sid2.noiseMode!=0);
+          const unsigned char decay=(ins->c64.s==15)?0:(ins->c64.d&0x0f);
+          fm.op[o].ar=(unsigned char)(((ins->c64.a & 0x0f) << 1) | 1);
+          fm.op[o].dr=(unsigned char)(((decay & 0x0f) << 1) | 1);
+          fm.op[o].sl=(unsigned char)(15-(ins->c64.s&0x0f));
+          fm.op[o].rr=ins->c64.r&0x0f;
+          fm.op[o].d2r=0;
+          fm.op[o].tl=0;
+          fm.op[o].mult=1;
+          fm.op[o].ws=sguC64Wave(ins->c64,periodicNoise);
+        } else {
+          fm.op[o].tl=127;
+          fm.op[o].enable=false;
+        }
+      }
+      break;
+    case DIV_INS_SU:
+      {
+        // SoundUnit uses single carrier on op3 with simple envelope
+        if (o==3) {
+          fm.op[o].ar=31;
+          fm.op[o].dr=0;
+          fm.op[o].sl=0;
+          fm.op[o].rr=15;
+          fm.op[o].d2r=0;
+          fm.op[o].tl=0;
+          fm.op[o].mult=1;
+          fm.op[o].ws=SGU_WAVE_SAWTOOTH;
+        } else {
+          fm.op[o].tl=127;
+          fm.op[o].enable=false;
+        }
+      }
+      break;
+    case DIV_INS_POKEY:
+      {
+        // POKEY uses single carrier on op3 with instant envelope
+        if (o==3) {
+          fm.op[o].ar=31;
+          fm.op[o].dr=0;
+          fm.op[o].sl=0;
+          fm.op[o].rr=15;
+          fm.op[o].d2r=0;
+          fm.op[o].tl=0;
+          fm.op[o].mult=1;
+          fm.op[o].ws=SGU_WAVE_PULSE;
+        } else {
+          fm.op[o].tl=127;
+          fm.op[o].enable=false;
+        }
+      }
+      break;
+    default:
+      break;
+  }
+
+  /* Convert Misc parameters */
+  switch (ins->type) {
+    case DIV_INS_OPZ:
+      {
+        // OPZ uses EGT flag for fixed frequency mode
+        esfm.op[o].fixed=fm.op[o].egt;
+      }
+      [[fallthrough]];
+    case DIV_INS_FM:
+    case DIV_INS_OPM:
+      {
+        // Map UI detune to Yamaha DT1 encoding for Yamaha FM chips (matches platform replayers).
+        static const unsigned char dtTable[8]={7,6,5,0,1,2,3,4};
+        fm.op[o].dt=dtTable[fm.op[o].dt&7];
+      }
+      break;
+    default:
+      break;
+  }
+  }
+
   chan[ch].state.fm=fm;
   chan[ch].state.esfm=esfm;
 
@@ -1074,7 +1078,12 @@ int DivPlatformSGU::dispatch(DivCommand c) {
 
       commitState(c.chan,ins);
       chan[c.chan].insChanged=false;
-      chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
+      // ESFM instruments use half volume to match ESFM chip output levels
+      if (ins->type==DIV_INS_ESFM) {
+        chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol>>1);
+      } else {
+        chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
+      }
 
       if (c.value!=DIV_NOTE_NULL) {
         chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value);
@@ -1111,7 +1120,13 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       if (!chan[c.chan].std.vol.has) {
         chan[c.chan].outVol=c.value;
       }
-      chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
+      DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_ESFM);
+      // ESFM instruments use half volume to match ESFM chip output levels
+      if (ins->type==DIV_INS_ESFM) {
+        chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol>>1);
+      } else {
+        chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
+      }
       break;
     }
     case DIV_CMD_GET_VOLUME:
@@ -1801,8 +1816,8 @@ void DivPlatformSGU::reset() {
     chan[i]=DivPlatformSGU::Channel();
     chan[i].std.setEngine(parent);
 
-    chan[i].vol=0x3f;
-    chan[i].outVol=0x3f;
+    chan[i].vol=0x7f;
+    chan[i].outVol=0x7f;
 
     chan[i].cutoff_slide=0;
     chan[i].pw_slide=0;
