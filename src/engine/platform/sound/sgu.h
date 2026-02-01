@@ -457,8 +457,8 @@ struct SGU
         int8_t pan;    // positive Right, negative Left
 
         // flags0:
-        //  - bit 0: (KEY) triggers key-on for the associated channel,
-        //    starting the envelope generator and resetting the signal phase.
+        //  - bit 0: (GATE) ADSR envelope is running when set; key-on/key-off,
+        //    rising edge is starting the envelope generator and resetting the signal phase.
         //  - bit 3: PCM enable (when set, src = pcm[pcmpos])
         //  - bit 4: ring mod enable (multiply by next channel's raw sample)
         //  - bits 5..7: filter mode selects (LP/HP/BP) (implemented as bitmask picks)

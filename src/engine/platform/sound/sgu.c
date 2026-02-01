@@ -366,8 +366,11 @@ static inline uint8_t compute_eg_rate(uint8_t op_data[], uint16_t ch_freq, enum 
         break;
     case SGU_EG_RELEASE:
     default:
-        rawrate = SGU_OP3_RR(op_data[3]) * 4 + 2;
+    {
+        uint8_t rr = SGU_OP3_RR(op_data[3]);
+        rawrate = rr ? rr * 4 + 2 : 0;
         break;
+    }
     }
     uint32_t rate = effective_rate(rawrate, ksrval);
     // Note: SGU EG runs at 16kHz (48kHz/3), OPN/ESFM at ~17.7kHz
@@ -465,6 +468,10 @@ static inline void start_release(struct sgu_ch_state *self, uint8_t op)
     // don't change anything if already in release state
     if (self->envelope_state[op] >= SGU_EG_RELEASE)
         return;
+#if SGU_EG_DEBUG
+    printf("SGU EG op%u start_release: attenuation=%u (0x%03X)\n",
+           op, self->envelope_attenuation[op], self->envelope_attenuation[op]);
+#endif
     self->envelope_state[op] = SGU_EG_RELEASE;
 }
 
@@ -943,7 +950,8 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                         uint8_t duty = sgu->chan[ch].duty;
                         if (wpar)
                             duty = (uint8_t)((uint8_t)wpar << 4);
-                        sample = (((phase >> 3) & 127) >= duty) ? 32767 : -32768;
+                        uint32_t p = phase & 0x3FF;
+                        sample = ((p >> 3) >= duty) ? 32767 : -32768;
                     }
                     break;
                     case SGU_WAVE_NOISE:
