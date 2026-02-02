@@ -102,6 +102,28 @@ static uint8_t rate4_to_rate5(uint8_t v4, DivInstrumentType insType) {
   return (uint8_t)v5;
 }
 
+static const unsigned char oplToSguWaveformMap[8]={
+  /* 0: SINE         -> */ SGU_WAVE_SINE,
+  /* 1: HALF_SINE    -> */ SGU_WAVE_SINE,
+  /* 2: ABS_SINE     -> */ SGU_WAVE_SINE,
+  /* 3: PULSE_SINE   -> */ SGU_WAVE_SINE,
+  /* 4: ALT_SINE     -> */ SGU_WAVE_SINE,
+  /* 5: ABS_ALT_SINE -> */ SGU_WAVE_SINE,
+  /* 6: SQUARE       -> */ SGU_WAVE_PULSE,
+  /* 7: LOG_SAW      -> */ SGU_WAVE_SAWTOOTH,
+};
+
+static const unsigned char suToSguWaveformMap[8]={
+  /* 0: PULSE          -> */ SGU_WAVE_PULSE,
+  /* 1: SAWTOOTH       -> */ SGU_WAVE_SAWTOOTH,
+  /* 2: SINE           -> */ SGU_WAVE_SINE,
+  /* 3: TRIANGLE       -> */ SGU_WAVE_TRIANGLE,
+  /* 4: NOISE          -> */ SGU_WAVE_NOISE,
+  /* 5: PERIODIC_NOISE -> */ SGU_WAVE_PERIODIC_NOISE,
+  /* 6: XOR_SINE       -> */ SGU_WAVE_SINE,
+  /* 7: XOR_TRIANGLE   -> */ SGU_WAVE_TRIANGLE,
+};
+
 void DivPlatformSGU::acquire(short** buf, size_t len) {
   thread_local int32_t o[2];
   for (int i=0; i<SGU_CHNS; i++) {
@@ -179,8 +201,16 @@ void DivPlatformSGU::tick(bool sysTick) {
         chan[i].cutoff+=chan[i].cutoff_slide*4;
         chan[i].cutoff=CLAMP(chan[i].cutoff,0,0x3fff);
 
-        chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
-        chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
+        // Scale cutoff for SU instrument compatibility.
+        // SU ran at ~297kHz, SGU at 48kHz with 3× internal scaling.
+        // Compensation factor: 297000 / (48000 × 3) ≈ 2.06 ≈ 2
+        // Cap at 28000 to prevent filter instability (28000 × 3 = 84000 in chip).
+        DivInstrument* slideIns=parent->getIns(chan[i].ins,DIV_INS_SU);
+        uint16_t scaledCutoff = (slideIns->type == DIV_INS_SU)
+            ? (uint16_t)MIN((uint32_t)chan[i].cutoff * 2, 28000)
+            : (uint16_t)MIN((uint32_t)chan[i].cutoff, 28000);
+        chWrite(i,SGU1_CHN_CUTOFF_L,scaledCutoff&0xff);
+        chWrite(i,SGU1_CHN_CUTOFF_H,scaledCutoff>>8);
       }
     }
 
@@ -205,6 +235,16 @@ void DivPlatformSGU::tick(bool sysTick) {
       chan[i].virtual_duty=(unsigned short)chan[i].duty<<5;
       chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
     }
+    if (chan[i].std.wave.had) {
+      // For SU/single-oscillator instruments, set waveform on output operator (op3)
+      DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
+      if (ins->type==DIV_INS_SU || ins->type==DIV_INS_POKEY ||
+          ins->type==DIV_INS_C64 || ins->type==DIV_INS_SID2) {
+        unsigned char wave=suToSguWaveformMap[chan[i].std.wave.val&7];
+        chan[i].state.fm.op[3].ws=wave;
+        applyOpRegs(i, 3, chan[i].state.fm.op[3], chan[i].state.esfm.op[3]);
+      }
+    }
     if (chan[i].std.phaseReset.had) {
       chan[i].phaseReset=chan[i].std.phaseReset.val;
       writeControlUpper(i);
@@ -224,8 +264,14 @@ void DivPlatformSGU::tick(bool sysTick) {
     }
     if (chan[i].std.ex1.had) {
       chan[i].cutoff=((chan[i].std.ex1.val&16383)*chan[i].baseCutoff)/16380;
-      chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
-      chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
+      // Scale cutoff for SU instrument compatibility (2× for SU type)
+      // Cap at 28000 to prevent filter instability (28000 × 3 = 84000 in chip)
+      DivInstrument* macroIns=parent->getIns(chan[i].ins,DIV_INS_SU);
+      uint16_t scaledCutoff = (macroIns->type == DIV_INS_SU)
+          ? (uint16_t)MIN((uint32_t)chan[i].cutoff * 2, 28000)
+          : (uint16_t)MIN((uint32_t)chan[i].cutoff, 28000);
+      chWrite(i,SGU1_CHN_CUTOFF_L,scaledCutoff&0xff);
+      chWrite(i,SGU1_CHN_CUTOFF_H,scaledCutoff>>8);
     }
     if (chan[i].std.ex2.had) {
       chan[i].res=chan[i].std.ex2.val;
@@ -284,7 +330,15 @@ void DivPlatformSGU::tick(bool sysTick) {
               chan[i].cutSweep=(val>0);
               chWrite(i,SGU1_CHN_SWCUT_SPD_L,chan[i].cutSweepP&0xff);
               chWrite(i,SGU1_CHN_SWCUT_SPD_H,chan[i].cutSweepP>>8);
-              chWrite(i,SGU1_CHN_SWCUT_AMT,chan[i].cutSweepV);
+              {
+                // Scale sweep amount for SU instrument compatibility (2× for SU type)
+                // Matches the 2× cutoff register scaling so sweep rate is consistent
+                uint8_t scaledAmt = (ins->type == DIV_INS_SU)
+                    ? (uint8_t)MIN((uint32_t)(chan[i].cutSweepV & 0x7F) * 2, 0x7F)
+                      | (chan[i].cutSweepV & 0x80)  // preserve direction bit
+                    : chan[i].cutSweepV;
+                chWrite(i,SGU1_CHN_SWCUT_AMT,scaledAmt);
+              }
               chWrite(i,SGU1_CHN_SWCUT_BND,chan[i].cutSweepB);
               writeControlUpper(i);
               break;
@@ -477,6 +531,7 @@ void DivPlatformSGU::tick(bool sysTick) {
         if (m.ws.had) {
           op.ws=m.ws.val;
         }
+        opDirty=true;
       }
 
       // // detune/fixed pitch
@@ -647,28 +702,6 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
     static_cast<unsigned int>(SGU_OP7_OUT(reg7)),
     static_cast<unsigned int>(SGU_OP7_WAVE(reg7)));
 }
-
-static const unsigned char oplToSguWaveformMap[8]={
-  /* 0: SINE         -> */ SGU_WAVE_SINE,
-  /* 1: HALF_SINE    -> */ SGU_WAVE_SINE,
-  /* 2: ABS_SINE     -> */ SGU_WAVE_SINE,
-  /* 3: PULSE_SINE   -> */ SGU_WAVE_SINE,
-  /* 4: ALT_SINE     -> */ SGU_WAVE_SINE,
-  /* 5: ABS_ALT_SINE -> */ SGU_WAVE_SINE,
-  /* 6: SQUARE       -> */ SGU_WAVE_PULSE,
-  /* 7: LOG_SAW      -> */ SGU_WAVE_SAWTOOTH,
-};
-
-static const unsigned char suToSguWaveformMap[8]={
-  /* 0: PULSE          -> */ SGU_WAVE_PULSE,
-  /* 1: SAWTOOTH       -> */ SGU_WAVE_SAWTOOTH,
-  /* 2: SINE           -> */ SGU_WAVE_SINE,
-  /* 3: TRIANGLE       -> */ SGU_WAVE_TRIANGLE,
-  /* 4: NOISE          -> */ SGU_WAVE_NOISE,
-  /* 5: PERIODIC_NOISE -> */ SGU_WAVE_PERIODIC_NOISE,
-  /* 6: XOR_SINE       -> */ SGU_WAVE_SINE,
-  /* 7: XOR_TRIANGLE   -> */ SGU_WAVE_TRIANGLE,
-};
 
 static void setEsfmRouting(DivInstrumentESFM& esfm,
     const unsigned char modIn[SGU_OP_PER_CH],
@@ -942,6 +975,7 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
         // C64 uses single carrier on op3; disable modulators
         if (o==3) {
           // Convert C64 ADSR (4-bit each) to FM envelope on carrier
+          fm.op[o].enable=true;
           const unsigned char decay=(ins->c64.s==15)?0:(ins->c64.d&0x0f);
           fm.op[o].ar=(unsigned char)(((ins->c64.a & 0x0f) << 1) | 1);
           fm.op[o].dr=(unsigned char)(((decay & 0x0f) << 1) | 1);
@@ -962,6 +996,7 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
       {
         // SID2 uses single carrier on op3; disable modulators
         if (o==3) {
+          fm.op[o].enable=true;
           const bool periodicNoise=(ins->sid2.noiseMode!=0);
           const unsigned char decay=(ins->c64.s==15)?0:(ins->c64.d&0x0f);
           fm.op[o].ar=(unsigned char)(((ins->c64.a & 0x0f) << 1) | 1);
@@ -982,12 +1017,13 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
       {
         // SoundUnit uses single carrier on op3 with simple envelope
         if (o==3) {
+          fm.op[o].enable=true;
           fm.op[o].ar=31;
           fm.op[o].dr=0;
           fm.op[o].sl=0;
           fm.op[o].rr=15;
           fm.op[o].d2r=0;
-          fm.op[o].tl=0;
+          fm.op[o].tl=15; // SU originally plays much quieter tha SGU
           fm.op[o].mult=1;
         } else {
           fm.op[o].tl=127;
@@ -999,6 +1035,7 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
       {
         // POKEY uses single carrier on op3 with instant envelope
         if (o==3) {
+          fm.op[o].enable=true;
           fm.op[o].ar=31;
           fm.op[o].dr=0;
           fm.op[o].sl=0;
@@ -1065,14 +1102,17 @@ int DivPlatformSGU::dispatch(DivCommand c) {
 
   switch (c.cmd) {
     case DIV_CMD_NOTE_ON: {
+      // 1. Initialize macros first
       chan[c.chan].macroInit(ins);
       if (!chan[c.chan].std.vol.will) {
         chan[c.chan].outVol=chan[c.chan].vol;
       }
 
+      // 2. Commit instrument state to chip
       commitState(c.chan,ins);
       chan[c.chan].insChanged=false;
 
+      // 3. Handle PCM mode
       if (chan[c.chan].pcm && !(ins->type==DIV_INS_AMIGA || ins->amiga.useSample)) {
         chan[c.chan].pcm=(ins->type==DIV_INS_AMIGA || ins->amiga.useSample);
         writeControl(c.chan);
@@ -1091,21 +1131,33 @@ int DivPlatformSGU::dispatch(DivCommand c) {
         chan[c.chan].sampleNoteDelta=0;
       }
 
+      // 4. Set up frequency
       if (c.value!=DIV_NOTE_NULL) {
         chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value);
-        chan[c.chan].note=c.value;
         chan[c.chan].freqChanged=true;
+        chan[c.chan].note=c.value;
       }
-      chan[c.chan].keyOn=true;
+
+      // 5. Trigger key-on
       chan[c.chan].active=true;
+      chan[c.chan].keyOn=true;
       chan[c.chan].released=false;
       chan[c.chan].hwSeqPos=0;
       chan[c.chan].hwSeqDelay=0;
+      // Write all channel parameters to ensure chip is properly set
       chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].vol);
-      if (!parent->song.compatFlags.brokenOutVol && !chan[c.chan].std.vol.will) {
-        chan[c.chan].outVol=chan[c.chan].vol;
+      chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
+      chWrite(c.chan,SGU1_CHN_PAN,chan[c.chan].pan);
+      {
+        // Scale cutoff for SU instrument compatibility (2× for SU type)
+        // Cap at 28000 to prevent filter instability (28000 × 3 = 84000 in chip)
+        uint16_t scaledCutoff = (ins->type == DIV_INS_SU)
+            ? (uint16_t)MIN((uint32_t)chan[c.chan].cutoff * 2, 28000)
+            : (uint16_t)MIN((uint32_t)chan[c.chan].cutoff, 28000);
+        chWrite(c.chan,SGU1_CHN_CUTOFF_L,scaledCutoff&0xff);
+        chWrite(c.chan,SGU1_CHN_CUTOFF_H,scaledCutoff>>8);
       }
-      chan[c.chan].insChanged=false;
+      chWrite(c.chan,SGU1_CHN_RESON,chan[c.chan].res);
       break;
     }
     case DIV_CMD_NOTE_OFF:
@@ -1151,6 +1203,9 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       chan[c.chan].freqChanged=true;
       break;
     case DIV_CMD_PRE_PORTA:
+      if (chan[c.chan].active && c.value2) {
+        if (parent->song.compatFlags.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_ESFM));
+      }
       if (!chan[c.chan].inPorta && c.value && !parent->song.compatFlags.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NOTE_FREQUENCY(chan[c.chan].note);
       chan[c.chan].inPorta=c.value;
       break;
@@ -1191,13 +1246,25 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     }
     case DIV_CMD_PANNING: {
       chan[c.chan].pan=parent->convertPanSplitToLinearLR(c.value,c.value2,254)-127;
-      chWrite(c.chan,0x03,chan[c.chan].pan);
+      chWrite(c.chan,SGU1_CHN_PAN,chan[c.chan].pan);
       break;
     }
-    // case DIV_CMD_WAVE:
-    //   chan[c.chan].wave=c.value&7;
-    //   writeControl(c.chan);
-    //   break;
+    case DIV_CMD_WAVE:
+      switch (ins->type) {
+        case DIV_INS_SU:
+        case DIV_INS_POKEY:
+        case DIV_INS_C64:
+        case DIV_INS_SID2: {
+          // Single-oscillator instruments: set waveform on output operator (op3)
+          unsigned char wave=suToSguWaveformMap[c.value&7];
+          chan[c.chan].state.fm.op[3].ws=wave;
+          applyOpRegs(c.chan, 3, chan[c.chan].state.fm.op[3], chan[c.chan].state.esfm.op[3]);
+          break;
+        }
+        default:
+          break;
+      }
+      break;
     case DIV_CMD_STD_NOISE_MODE:
       chan[c.chan].duty=c.value&127;
       chan[c.chan].virtual_duty=(unsigned short)chan[c.chan].duty << 5;
@@ -1365,7 +1432,14 @@ int DivPlatformSGU::dispatch(DivCommand c) {
         case 2:
           chan[c.chan].cutSweepV=c.value2;
           chan[c.chan].cutSweep=(c.value2>0);
-          chWrite(c.chan,SGU1_CHN_SWCUT_AMT,chan[c.chan].cutSweepV);
+          {
+            // Scale sweep amount for SU instrument compatibility (2× for SU type)
+            uint8_t scaledAmt = (ins->type == DIV_INS_SU)
+                ? (uint8_t)MIN((uint32_t)(chan[c.chan].cutSweepV & 0x7F) * 2, 0x7F)
+                  | (chan[c.chan].cutSweepV & 0x80)  // preserve direction bit
+                : chan[c.chan].cutSweepV;
+            chWrite(c.chan,SGU1_CHN_SWCUT_AMT,scaledAmt);
+          }
           break;
       }
       writeControlUpper(c.chan);
@@ -1389,9 +1463,24 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       chan[c.chan].baseCutoff=c.value*4;
       if (!chan[c.chan].std.ex1.has) {
         chan[c.chan].cutoff=chan[c.chan].baseCutoff;
-        chWrite(c.chan,SGU1_CHN_CUTOFF_L,chan[c.chan].cutoff&0xff);
-        chWrite(c.chan,SGU1_CHN_CUTOFF_H,chan[c.chan].cutoff>>8);
+        // Scale cutoff for SU instrument compatibility (2× for SU type)
+        // Cap at 28000 to prevent filter instability (28000 × 3 = 84000 in chip)
+        uint16_t scaledCutoff = (ins->type == DIV_INS_SU)
+            ? (uint16_t)MIN((uint32_t)chan[c.chan].cutoff * 2, 28000)
+            : (uint16_t)MIN((uint32_t)chan[c.chan].cutoff, 28000);
+        chWrite(c.chan,SGU1_CHN_CUTOFF_L,scaledCutoff&0xff);
+        chWrite(c.chan,SGU1_CHN_CUTOFF_H,scaledCutoff>>8);
       }
+      break;
+    case DIV_CMD_C64_PW_SLIDE:
+      chan[c.chan].pw_slide=c.value*c.value2;
+      break;
+    case DIV_CMD_C64_CUTOFF_SLIDE:
+      chan[c.chan].cutoff_slide=c.value*c.value2;
+      break;
+    case DIV_CMD_SAMPLE_POS:
+      chan[c.chan].hasOffset=c.value;
+      chan[c.chan].keyOn=true;
       break;
     // these will be used in ROM export.
     // do NOT implement!
@@ -1456,10 +1545,6 @@ void DivPlatformSGU::reset() {
     chan[i].pw_slide=0;
 
     chan[i].virtual_duty=0x800; // for some reason duty by default is 50%
-  }
-
-  for (int i=0; i<SGU_CHNS; i++) {
-    chWrite(i,SGU1_CHN_DUTY,0x3f);
   }
 
   oldOut[0]=0;
