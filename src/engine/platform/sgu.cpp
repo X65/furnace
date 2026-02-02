@@ -21,20 +21,9 @@
 #include "../engine.h"
 #include "../../ta-log.h"
 #include "sound/sgu.h"
-#include <string.h>
-#include <stdio.h>
-#include <math.h>
+#include <utility>
 
-// SGU-1 replayer notes:
-// - Entry points: init/reset/tick/acquire wire the core to Furnace's timing/output path.
-// - FM vs PCM: commitState picks FM (ESFM-style ops) or PCM (Amiga sample path via SoundUnit-style regs).
-// - SID-like pitch: NOTE_FREQUENCY gives freq16 @ 1 MHz; calcFreq keeps freq16 with CHIP_FREQBASE, then write SGU FREQ regs.
-// - OPN envelope: AR/DR/SR are 5-bit; MSBs live in op reg7, SR lives in reg4 (applyOpRegs).
-// - RING/SYNC: per-operator bits in reg6; masks map op0..3 to the previous operator (op0 uses op3).
-// - Global regs: SoundUnit-style flags0/flags1; KEY-ON is flags0 bit0; WAVE bits live per-operator.
-
-#define SGU_REG_POOL_SIZE (SGU_CHNS * SGU_REGS_PER_CH)
-#define rWrite(a,v) if (!skipRegisterWrites) {writes.push(QueuedWrite(a,v)); if (dumpWrites) {addWrite(a,v);} if ((a) < SGU_REG_POOL_SIZE) {reinterpret_cast<unsigned char*>(chip.chan)[(a)]=(v);} }
+#define rWrite(a,v) if (!skipRegisterWrites) { writes.push(QueuedWrite(a,v)); if (dumpWrites) {addWrite(a,v);} }
 
 static constexpr int SGU_CH_BASE = SGU_OP_PER_CH * SGU_OP_REGS;
 
@@ -92,6 +81,27 @@ const char** DivPlatformSGU::getRegisterSheet() {
   return regCheatSheetSGU;
 }
 
+static uint8_t rate4_to_rate5(uint8_t v4, DivInstrumentType insType) {
+  if (v4 == 0) return 0;
+  int v5 = (v4 << 1) | (v4 >> 3);
+
+  int num = 0, den = 0;
+  switch (insType) {
+    case DIV_INS_OPLL:
+    case DIV_INS_OPL:
+        num = 11;
+        den = 8;
+      break;
+    default:
+      break;
+  }
+  v5 *= num;
+  v5 /= den;
+
+  if (v5 > 31) v5 = 31;
+  return (uint8_t)v5;
+}
+
 void DivPlatformSGU::acquire(short** buf, size_t len) {
   thread_local int32_t o[2];
   for (int i=0; i<SGU_CHNS; i++) {
@@ -109,8 +119,8 @@ void DivPlatformSGU::acquire(short** buf, size_t len) {
       oscBuf[c]->putSample(h,SGU_GetSample(&chip,c));
     }
 
-    buf[0][h] = (short)CLAMP(o[0], -32768, 32767);
-    buf[1][h] = (short)CLAMP(o[1], -32768, 32767);
+    buf[0][h] = (short)CLAMP(o[0], INT16_MIN, INT16_MAX);
+    buf[1][h] = (short)CLAMP(o[1], INT16_MIN, INT16_MAX);
   }
   for (int i=0; i<SGU_CHNS; i++) {
     oscBuf[i]->end(len);
@@ -131,6 +141,8 @@ void DivPlatformSGU::acquireDirect(blip_buffer_t** bb, size_t len) {
     }
 
     SGU_NextSample(&chip,&o[0],&o[1]);
+    o[0] = CLAMP(o[0], INT16_MIN, INT16_MAX);
+    o[1] = CLAMP(o[1], INT16_MIN, INT16_MAX);
     const unsigned int shiftedNeedlePos=sharedNeedlePos>>OSCBUF_PREC;
     for (int c=0; c<SGU_CHNS; c++) {
       putSampleIKnowWhatIAmDoing(oscBuf[c],shiftedNeedlePos,SGU_GetSample(&chip,c));
@@ -151,109 +163,7 @@ void DivPlatformSGU::acquireDirect(blip_buffer_t** bb, size_t len) {
   }
 }
 
-void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator& op, const DivInstrumentESFM::Operator& opE) {
-  const unsigned char tl = op.tl & 0x7f;  // 7-bit TL
-  const unsigned char ar = op.ar & 0x1f;  // 5-bit AR
-  const unsigned char dr = op.dr & 0x1f;  // 5-bit DR
-
-  // R0: [7]TRM [6]VIB [5]FIX [4]--- [3:0]MUL
-  const unsigned char reg0 = (op.am ? SGU_OP0_TRM_BIT : 0)
-    | (op.vib ? SGU_OP0_VIB_BIT : 0)
-    | (opE.fixed ? SGU_OP0_FIX_BIT : 0)
-    | (op.mult & SGU_OP0_MUL_MASK);
-
-  // R1: [7:6]KSL [5:0]TL_lo6
-  const unsigned char reg1 = (op.ksl << SGU_OP1_KSL_SHIFT)
-    | (tl & SGU_OP1_TL_MASK);
-
-  // R2: [7:4]AR_lo4 [3:0]DR_lo4
-  const unsigned char reg2 = ((ar & 0x0f) << SGU_OP2_AR_SHIFT)
-    | (dr & SGU_OP2_DR_MASK);
-
-  // R3: [7:4]SL [3:0]RR
-  const unsigned char reg3 = (op.sl << SGU_OP3_SL_SHIFT)
-    | (op.rr & SGU_OP3_RR_MASK);
-
-  // R4: [7:5]DT [4:0]SR (SR uses OPN-style 5-bit value from d2r)
-  const unsigned char reg4 = (op.dt << SGU_OP4_DT_SHIFT)
-    | (op.d2r & SGU_OP4_SR_MASK);
-
-  // R5: [7:5]DELAY [4:3]KSR [2:0]WPAR
-  const unsigned char wpar = 0; // SGU WPAR not yet exposed via Furnace macros
-  const unsigned char reg5 = (opE.delay << SGU_OP5_DELAY_SHIFT)
-    | (op.rs << SGU_OP5_KSR_SHIFT)
-    | (wpar & SGU_OP5_WPAR_MASK);
-
-  // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
-  // Note: SYNC and RING not yet exposed via Furnace macros
-  const unsigned char reg6 = (op.dam ? SGU_OP6_TRMD_BIT : 0)
-    | (op.dvb ? SGU_OP6_VIBD_BIT : 0)
-    | (opE.modIn << SGU_OP6_MOD_SHIFT)
-    | ((tl >> SGU_OP1_TL_OFFSET) & SGU_OP6_TL_MSB_BIT);
-
-  // R7: [7:5]OUT [4]AR_msb [3]DR_msb [2:0]WAVE
-  const unsigned char outLvl = op.enable ? (opE.outLvl & 0x07) : 0;
-  const unsigned char reg7 = (outLvl << SGU_OP7_OUT_SHIFT)
-    | ((ar & 0x10) ? SGU_OP7_AR_MSB_BIT : 0)
-    | ((dr & 0x10) ? SGU_OP7_DR_MSB_BIT : 0)
-    | (op.ws & SGU_OP7_WAVE_MASK);
-
-  opWrite(ch, o, 0x00, reg0);
-  opWrite(ch, o, 0x01, reg1);
-  opWrite(ch, o, 0x02, reg2);
-  opWrite(ch, o, 0x03, reg3);
-  opWrite(ch, o, 0x04, reg4);
-  opWrite(ch, o, 0x05, reg5);
-  opWrite(ch, o, 0x06, reg6);
-  opWrite(ch, o, 0x07, reg7);
-}
-
-static void setEsfmRouting(DivInstrumentESFM& esfm,
-    const unsigned char modIn[SGU_OP_PER_CH],
-    const unsigned char outLvl[SGU_OP_PER_CH]) {
-  for (int o=0; o<SGU_OP_PER_CH; o++) {
-    esfm.op[o].modIn=modIn[o];
-    esfm.op[o].outLvl=outLvl[o];
-  }
-}
-
-// Convert C64 waveform to SGU waveform
-static unsigned char sguC64Wave(const DivInstrumentC64& c64, bool periodicNoise) {
-  // C64 wave bits: 4=noise, 2=pulse, 1=saw, 0=tri (combined waveforms possible)
-  if (c64.noiseOn) {
-    return periodicNoise ? SGU_WAVE_PERIODIC_NOISE : SGU_WAVE_NOISE;
-  }
-  if (c64.pulseOn) return SGU_WAVE_PULSE;
-  if (c64.sawOn) return SGU_WAVE_SAWTOOTH;
-  if (c64.triOn) return SGU_WAVE_TRIANGLE;
-  return SGU_WAVE_PULSE; // default
-}
-
-void DivPlatformSGU::writeControl(int ch) {
-  // FLAGS0: [7:4]CONTROL [3]PCM [2:1]--- [0]GATE
-  chWrite(ch, SGU1_CHN_FLAGS0,
-    ((chan[ch].active && chan[ch].gate) ? SGU1_FLAGS0_CTL_GATE : 0)
-    | (chan[ch].pcm << SGU1_FLAGS0_PCM_SHIFT)
-    | (chan[ch].control << SGU1_FLAGS0_CONTROL_SHIFT));
-}
-
-void DivPlatformSGU::writeControlUpper(int ch) {
-  // FLAGS1: [6]CUT_SWEEP [5]VOL_SWEEP [4]FREQ_SWEEP [3]TIMER_SYNC [2]PCM_LOOP [1]FILTER_PHASE_RESET [0]PHASE_RESET
-  chWrite(ch, SGU1_CHN_FLAGS1,
-    (chan[ch].phaseReset ? SGU1_FLAGS1_PHASE_RESET : 0)
-    | (chan[ch].filterPhaseReset ? SGU1_FLAGS1_FILTER_PHASE_RESET : 0)
-    | (chan[ch].pcmLoop ? SGU1_FLAGS1_PCM_LOOP : 0)
-    | (chan[ch].timerSync ? SGU1_FLAGS1_TIMER_SYNC : 0)
-    | (chan[ch].freqSweep ? SGU1_FLAGS1_FREQ_SWEEP : 0)
-    | (chan[ch].volSweep ? SGU1_FLAGS1_VOL_SWEEP : 0)
-    | (chan[ch].cutSweep ? SGU1_FLAGS1_CUT_SWEEP : 0));
-  chan[ch].phaseReset = false;
-  chan[ch].filterPhaseReset = false;
-}
-
 void DivPlatformSGU::tick(bool sysTick) {
-  bool mustHardReset=false;
-
   for (int i=0; i<SGU_CHNS; i++) {
     chan[i].std.next();
 
@@ -263,32 +173,24 @@ void DivPlatformSGU::tick(bool sysTick) {
         chan[i].virtual_duty=CLAMP(chan[i].virtual_duty,0,0xfff);
         chan[i].duty=chan[i].virtual_duty>>5;
 
-        chWrite(i,0x08,chan[i].duty);
+        chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
       }
       if (chan[i].cutoff_slide!=0) {
         chan[i].cutoff+=chan[i].cutoff_slide*4;
         chan[i].cutoff=CLAMP(chan[i].cutoff,0,0x3fff);
 
-        chWrite(i,0x06,chan[i].cutoff&0xff);
-        chWrite(i,0x07,chan[i].cutoff>>8);
+        chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+        chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
       }
     }
 
+    // Volume macro
     if (chan[i].std.vol.had) {
-      DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
-      if (ins->type==DIV_INS_AMIGA) {
-        chan[i].outVol=((chan[i].vol&127)*MIN(64,chan[i].std.vol.val))>>6;
-      } else {
-        chan[i].outVol=((chan[i].vol&127)*MIN(127,chan[i].std.vol.val))>>7;
-      }
-      // ESFM instruments use half volume to match ESFM chip output levels
-      if (ins->type==DIV_INS_ESFM) {
-        chWrite(i,SGU1_CHN_VOL,chan[i].outVol>>1);
-      } else {
-        chWrite(i,SGU1_CHN_VOL,chan[i].outVol);
-      }
+      chan[i].outVol=VOL_SCALE_LOG_BROKEN(chan[i].vol,MIN(127,chan[i].std.vol.val),127);
+      chWrite(i, SGU1_CHN_VOL, chan[i].outVol);
     }
 
+    // Arpeggio
     if (NEW_ARP_STRAT) {
       chan[i].handleArp();
     } else if (chan[i].std.arp.had) {
@@ -298,16 +200,19 @@ void DivPlatformSGU::tick(bool sysTick) {
       chan[i].freqChanged=true;
     }
 
-    if (chan[i].std.wave.had) {
-      chan[i].wave=chan[i].std.wave.val&7;
-      writeControl(i);
+    if (chan[i].std.duty.had) {
+      chan[i].duty=chan[i].std.duty.val;
+      chan[i].virtual_duty=(unsigned short)chan[i].duty<<5;
+      chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
     }
-
+    if (chan[i].std.phaseReset.had) {
+      chan[i].phaseReset=chan[i].std.phaseReset.val;
+      writeControlUpper(i);
+    }
     if (chan[i].std.panL.had) {
       chan[i].pan=chan[i].std.panL.val;
-      chWrite(i,0x03,chan[i].pan);
+      chWrite(i,SGU1_CHN_PAN,chan[i].pan);
     }
-
     if (chan[i].std.pitch.had) {
       if (chan[i].std.pitch.mode) {
         chan[i].pitch2+=chan[i].std.pitch.val;
@@ -317,34 +222,19 @@ void DivPlatformSGU::tick(bool sysTick) {
       }
       chan[i].freqChanged=true;
     }
-
-    if (chan[i].std.phaseReset.had) {
-      chan[i].phaseReset=chan[i].std.phaseReset.val;
-      writeControlUpper(i);
-    }
-
-    if (chan[i].std.duty.had) {
-      chan[i].duty=chan[i].std.duty.val;
-      chan[i].virtual_duty=(unsigned short)chan[i].duty<<5;
-      chWrite(i,0x08,chan[i].duty);
-    }
-
     if (chan[i].std.ex1.had) {
       chan[i].cutoff=((chan[i].std.ex1.val&16383)*chan[i].baseCutoff)/16380;
-      chWrite(i,0x06,chan[i].cutoff&0xff);
-      chWrite(i,0x07,chan[i].cutoff>>8);
+      chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+      chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
     }
-
     if (chan[i].std.ex2.had) {
       chan[i].res=chan[i].std.ex2.val;
-      chWrite(i,0x09,chan[i].res);
+      chWrite(i,SGU1_CHN_RESON,chan[i].res);
     }
-
     if (chan[i].std.ex3.had) {
       chan[i].control=chan[i].std.ex3.val&15;
       writeControl(i);
     }
-
     if (chan[i].std.ex4.had) {
       chan[i].syncTimer=chan[i].std.ex4.val&65535;
       chan[i].timerSync=(chan[i].syncTimer>0);
@@ -353,13 +243,13 @@ void DivPlatformSGU::tick(bool sysTick) {
       writeControlUpper(i);
     }
 
-    // run hardware sequence (SoundUnit feature)
+    // run hardware sequence
     if (chan[i].active) {
       if (--chan[i].hwSeqDelay<=0) {
         chan[i].hwSeqDelay=0;
         DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
         int hwSeqCount=0;
-        while (chan[i].hwSeqPos<ins->su.hwSeqLen && hwSeqCount<8) {
+        while (chan[i].hwSeqPos<ins->su.hwSeqLen && hwSeqCount<SGU_CHNS) {
           bool leave=false;
           unsigned char bound=ins->su.hwSeq[chan[i].hwSeqPos].bound;
           unsigned char val=ins->su.hwSeq[chan[i].hwSeqPos].val;
@@ -425,10 +315,89 @@ void DivPlatformSGU::tick(bool sysTick) {
       }
     }
 
+    // Frequency update
+    if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
+      //DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
+      chan[i].freq=parent->calcFreq(chan[i].baseFreq, chan[i].pitch,
+          chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,
+          chan[i].fixedArp, false, 2, chan[i].pitch2, chipClock, CHIP_FREQBASE);
+
+      if (chan[i].pcm) {
+        DivSample* sample=parent->getSample(chan[i].sample);
+        if (sample!=NULL) {
+          double off=0.25;
+          if (sample->centerRate<1) {
+            off=0.25;
+          } else {
+            off=(double)sample->centerRate/(parent->getCenterRate()*4.0);
+          }
+          chan[i].freq=(double)chan[i].freq*off;
+        }
+      }
+
+      if (chan[i].freq<0) chan[i].freq=0;
+      if (chan[i].freq>65535) chan[i].freq=65535;
+
+      chWrite(i,SGU1_CHN_FREQ_L,(uint8_t)(chan[i].freq&0xff));
+      chWrite(i,SGU1_CHN_FREQ_H,(uint8_t)(chan[i].freq>>8));
+
+      if (chan[i].keyOn) {
+        if (chan[i].pcm) {
+          int sNum=chan[i].sample;
+          DivSample* sample=parent->getSample(sNum);
+          if (sample!=NULL && sNum>=0 && sNum<parent->song.sampleLen) {
+            unsigned int sampleEnd=sampleOffSU[sNum]+(sample->getLoopEndPosition());
+            unsigned int off=sampleOffSU[sNum]+chan[i].hasOffset;
+            chan[i].hasOffset=0;
+            if (sampleEnd>=getSampleMemCapacity(0)) sampleEnd=getSampleMemCapacity(0)-1;
+            chWrite(i,SGU1_CHN_PCM_POS_L,off&0xff);
+            chWrite(i,SGU1_CHN_PCM_POS_H,off>>8);
+            chWrite(i,SGU1_CHN_PCM_END_L,sampleEnd&0xff);
+            chWrite(i,SGU1_CHN_PCM_END_H,sampleEnd>>8);
+            if (sample->isLoopable()) {
+              unsigned int sampleLoop=sampleOffSU[sNum]+sample->getLoopStartPosition();
+              if (sampleLoop>=getSampleMemCapacity(0)) sampleLoop=getSampleMemCapacity(0)-1;
+              chWrite(i,SGU1_CHN_PCM_RST_L,sampleLoop&0xff);
+              chWrite(i,SGU1_CHN_PCM_RST_H,sampleLoop>>8);
+              chan[i].pcmLoop=true;
+            } else {
+              chan[i].pcmLoop=false;
+            }
+            writeControl(i);
+            writeControlUpper(i);
+          }
+        }
+      }
+
+      chan[i].freqChanged=false;
+    }
+
+    // Key-on handling
+    if (chan[i].keyOn) {
+      if (chan[i].gate) {
+        chan[i].gate=false;
+        writeControl(i);
+      }
+      chan[i].gate=true;
+      chan[i].phaseReset=true;
+      writeControl(i);
+      writeControlUpper(i);
+      chan[i].keyOn=false;
+    }
+
+    // Key-off handling
+    if (chan[i].keyOff) {
+      chan[i].gate=false;
+      writeControl(i);
+      chan[i].keyOff=false;
+    }
+
+    // Per-operator macros
     for (int o=0; o<SGU_OP_PER_CH; o++) {
       DivInstrumentFM::Operator& op=chan[i].state.fm.op[o];
       DivInstrumentESFM::Operator& opE=chan[i].state.esfm.op[o];
       DivMacroInt::IntOp& m=chan[i].std.op[o];
+
       bool opDirty=false;
 
       if (m.am.had) {
@@ -453,11 +422,13 @@ void DivPlatformSGU::tick(bool sysTick) {
       }
 
       if (m.ar.had) {
-        op.ar=m.ar.val;
+        DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_ESFM);
+        op.ar=rate4_to_rate5(m.ar.val & 0x0f, ins->type);
         opDirty=true;
       }
       if (m.dr.had) {
-        op.dr=m.dr.val;
+        DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_ESFM);
+        op.dr=rate4_to_rate5(m.dr.val & 0x0f, ins->type);
         opDirty=true;
       }
       if (m.sl.had) {
@@ -476,7 +447,6 @@ void DivPlatformSGU::tick(bool sysTick) {
         if (m.ksl.had) {
           op.ksl=m.ksl.val;
         }
-        opWrite(i,o,SGU_OP_REG_TL,(op.tl&SGU_OP1_TL_MASK)|(op.ksl<<SGU_OP1_KSL_SHIFT));
       }
 
       if (m.dam.had) {
@@ -499,132 +469,36 @@ void DivPlatformSGU::tick(bool sysTick) {
         opDirty=true;
       }
 
-      if (m.egt.had) {
-        // outLvl
-        opE.outLvl=m.egt.val;
-        opDirty=true;
-      }
-      if (m.ws.had) {
-        op.ws=m.ws.val;
-        opDirty=true;
+      if (m.egt.had | m.ws.had) {
+        if (m.egt.had) {
+          // outLvl
+          opE.outLvl=m.egt.val;
+        }
+        if (m.ws.had) {
+          op.ws=m.ws.val;
+        }
       }
 
-      // detune/fixed pitch
-      if (opE.fixed) {
-        if (m.ssg.had) {
-          opE.ct=(opE.ct&(~(7<<2)))|((m.ssg.val&7)<<2);
-          chan[i].freqChanged=true;
-        }
-        if (m.dt.had) {
-          opE.dt=m.dt.val&0xff;
-          opE.ct=(opE.ct&(~3))|((m.dt.val>>8)&3);
-          chan[i].freqChanged=true;
-        }
-      } else {
-        chan[i].handleArpFmOp(0, o);
-        chan[i].handlePitchFmOp(o);
-      }
+      // // detune/fixed pitch
+      // if (opE.fixed) {
+      //   if (m.ssg.had) {
+      //     opE.ct=(opE.ct&(~(7<<2)))|((m.ssg.val&7)<<2);
+      //     chan[i].freqChanged=true;
+      //   }
+      //   if (m.dt.had) {
+      //     opE.dt=m.dt.val&0xff;
+      //     opE.ct=(opE.ct&(~3))|((m.dt.val>>8)&3);
+      //     chan[i].freqChanged=true;
+      //   }
+      // }
 
-      if (m.dt2.had) {
-        opE.delay=m.dt2.val;
-        opDirty=true;
-      }
+      // if (m.dt2.had) {
+      //   opE.delay=m.dt2.val;
+      //   opDirty=true;
+      // }
 
       if (opDirty) {
-        DivInstrumentFM::Operator& op=chan[i].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[i].state.esfm.op[o];
         applyOpRegs(i,o,op,opE);
-      }
-    }
-
-    if (chan[i].hardReset && chan[i].keyOn) {
-      mustHardReset=true;
-      for (int o=0; o<SGU_OP_PER_CH; o++) {
-        opWrite(i,o,SGU_OP_REG_SL_RR,0xff);  // SL=15, RR=15: immediate silence
-      }
-    }
-
-    if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
-      // SGU uses direct 16-bit frequency per channel (operators derive from MUL/DT)
-      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,false,2,chan[i].pitch2,chipClock,CHIP_FREQBASE);
-      // Apply sample rate adjustment for PCM playback
-      if (chan[i].pcm) {
-        DivSample* sample=parent->getSample(chan[i].sample);
-        if (sample!=NULL) {
-          double off=0.25;
-          if (sample->centerRate<1) {
-            off=0.25;
-          } else {
-            off=(double)sample->centerRate/(parent->getCenterRate()*4.0);
-          }
-          chan[i].freq=(double)chan[i].freq*off;
-        }
-      }
-      if (chan[i].freq<0) chan[i].freq=0;
-      if (chan[i].freq>65535) chan[i].freq=65535;
-
-      // Write channel frequency
-      chWrite(i,SGU1_CHN_FREQ_L,chan[i].freq&0xff);
-      chWrite(i,SGU1_CHN_FREQ_H,(chan[i].freq>>8)&0xff);
-
-      // PCM sample setup on keyOn
-      if (chan[i].keyOn) {
-        if (chan[i].pcm) {
-          int sNum=chan[i].sample;
-          DivSample* sample=parent->getSample(sNum);
-          if (sample!=NULL && sNum>=0 && sNum<parent->song.sampleLen) {
-            unsigned int sampleEnd=sampleOffSGU[sNum]+(sample->getLoopEndPosition());
-            unsigned int off=sampleOffSGU[sNum]+chan[i].hasOffset;
-            chan[i].hasOffset=0;
-            if (sampleEnd>=getSampleMemCapacity(0)) sampleEnd=getSampleMemCapacity(0)-1;
-            chWrite(i,SGU1_CHN_PCM_POS_L,off&0xff);
-            chWrite(i,SGU1_CHN_PCM_POS_H,off>>8);
-            chWrite(i,SGU1_CHN_PCM_END_L,sampleEnd&0xff);
-            chWrite(i,SGU1_CHN_PCM_END_H,sampleEnd>>8);
-            if (sample->isLoopable()) {
-              unsigned int sampleLoop=sampleOffSGU[sNum]+sample->getLoopStartPosition();
-              if (sampleLoop>=getSampleMemCapacity(0)) sampleLoop=getSampleMemCapacity(0)-1;
-              chWrite(i,SGU1_CHN_PCM_RST_L,sampleLoop&0xff);
-              chWrite(i,SGU1_CHN_PCM_RST_H,sampleLoop>>8);
-              chan[i].pcmLoop=true;
-            } else {
-              chan[i].pcmLoop=false;
-            }
-            writeControl(i);
-            writeControlUpper(i);
-          }
-        }
-      }
-
-      if (chan[i].keyOn) {
-        chan[i].gate=false;
-        writeControl(i);
-        chan[i].gate=true;
-        writeControl(i);
-      }
-      if (chan[i].keyOff) {
-        chan[i].gate=false;
-        writeControl(i);
-      }
-      chan[i].keyOn=false;
-      chan[i].keyOff=false;
-      chan[i].freqChanged=false;
-    }
-  }
-
-  if (mustHardReset) {
-    for (int i=0; i<SGU_CHNS; i++) {
-      if (chan[i].hardReset && chan[i].keyOn) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[i].state.fm.op[o];
-          opWrite(i,o,SGU_OP_REG_SL_RR,(op.sl<<SGU_OP3_SL_SHIFT)|(op.rr&SGU_OP3_RR_MASK));
-        }
-        // Key on after hard reset: First clear GATE to ensure 0→1 edge transition
-        chan[i].gate=false;
-        writeControl(i);
-        chan[i].gate=true;
-        writeControl(i);
-        chan[i].keyOn=false;
       }
     }
   }
@@ -635,50 +509,242 @@ void DivPlatformSGU::muteChannel(int ch, bool mute) {
   chip.muted[ch]=mute;
 }
 
+void DivPlatformSGU::writeControl(int ch) {
+  // FLAGS0: [7:4]CONTROL [3]PCM [2:1]--- [0]GATE
+  chWrite(ch, SGU1_CHN_FLAGS0,
+    ((chan[ch].active && chan[ch].gate) ? SGU1_FLAGS0_CTL_GATE : 0)
+    | (chan[ch].pcm << SGU1_FLAGS0_PCM_SHIFT)
+    | (chan[ch].control << SGU1_FLAGS0_CONTROL_SHIFT));
+}
+
+void DivPlatformSGU::writeControlUpper(int ch) {
+  // FLAGS1: [6]CUT_SWEEP [5]VOL_SWEEP [4]FREQ_SWEEP [3]TIMER_SYNC [2]PCM_LOOP [1]FILTER_PHASE_RESET [0]PHASE_RESET
+  chWrite(ch, SGU1_CHN_FLAGS1,
+    (chan[ch].phaseReset ? SGU1_FLAGS1_PHASE_RESET : 0)
+    | (chan[ch].filterPhaseReset ? SGU1_FLAGS1_FILTER_PHASE_RESET : 0)
+    | (chan[ch].pcmLoop ? SGU1_FLAGS1_PCM_LOOP : 0)
+    | (chan[ch].timerSync ? SGU1_FLAGS1_TIMER_SYNC : 0)
+    | (chan[ch].freqSweep ? SGU1_FLAGS1_FREQ_SWEEP : 0)
+    | (chan[ch].volSweep ? SGU1_FLAGS1_VOL_SWEEP : 0)
+    | (chan[ch].cutSweep ? SGU1_FLAGS1_CUT_SWEEP : 0));
+  chan[ch].phaseReset = false;
+  chan[ch].filterPhaseReset = false;
+}
+
+void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator& op, const DivInstrumentESFM::Operator& opE) {
+  // logD("SGU op ch=%d op=%d INPUT: op.ar=%u op.dr=%u op.tl=%u", ch, o,
+  //   static_cast<unsigned int>(op.ar), static_cast<unsigned int>(op.dr), static_cast<unsigned int>(op.tl));
+  const unsigned char am = op.am & 0x01;  // 1-bit TRM
+  const unsigned char fm = op.vib & 0x01;  // 1-bit VIB
+  const unsigned char fix = opE.fixed & 0x01;  // 1-bit FIXed
+  const unsigned char mult = op.mult & 0x0f; // 4-bit MUL
+  const unsigned char ksl = op.ksl & 0x03;  // 2-bit KSL
+  const unsigned char tl = op.tl & 0x7f;  // 7-bit TL
+  const unsigned char ar = op.ar & 0x1f;  // 5-bit AR
+  const unsigned char dr = op.dr & 0x1f;  // 5-bit DR
+  const unsigned char sl = op.sl & 0x0f;  // 4-bit SL
+  const unsigned char rr = op.rr & 0x0f;  // 4-bit RR
+  const unsigned char dt = op.dt & 0x07;  // 3-bit DT
+  const unsigned char sr = op.d2r & 0x1f; // 5-bit SR/D2R
+  const unsigned char delay = opE.delay & 0x07; // 3-bit DELAY
+  const unsigned char ksr = op.rs & 0x03;  // 2-bit KSR
+  const unsigned char wpar = 0; // WPAR not yet exposed via Furnace macros
+  const unsigned char dam = op.dam & 0x01;  // 1-bit TRMD
+  const unsigned char dvb = op.dvb & 0x01;  // 1-bit VIBD
+  const unsigned char sync = 0; // SYNC not yet exposed via Furnace macros
+  const unsigned char ring = 0; // RING not yet exposed via Furnace macros
+  const unsigned char modIn = opE.modIn & 0x07; // 3-bit MOD_IN
+  const unsigned char outLvl = opE.outLvl & 0x07; // 3-bit OUT
+  const unsigned char wave = op.ws & 0x07;    // 3-bit WAVE Shape
+
+
+  // R0: [7]TRM [6]VIB [5]FIX [4]--- [3:0]MULT
+  const unsigned char reg0 = (am ? SGU_OP0_TRM_BIT : 0)
+    | (fm ? SGU_OP0_VIB_BIT : 0)
+    | (fix ? SGU_OP0_FIX_BIT : 0)
+    | (mult & SGU_OP0_MUL_MASK);
+
+  // R1: [7:6]KSL [5:0]TL_lo6
+  const unsigned char reg1 = ((ksl << SGU_OP1_KSL_SHIFT) & SGU_OP1_KSL_MASK)
+    | (tl & SGU_OP1_TL_MASK);
+
+  // R2: [7:4]AR_lo4 [3:0]DR_lo4
+  const unsigned char reg2 = ((ar << SGU_OP2_AR_SHIFT) & SGU_OP2_AR_MASK)
+    | (dr & SGU_OP2_DR_MASK);
+
+  // R3: [7:4]SL [3:0]RR
+  const unsigned char reg3 = ((sl << SGU_OP3_SL_SHIFT) & SGU_OP3_SL_MASK)
+    | (rr & SGU_OP3_RR_MASK);
+
+  // R4: [7:5]DT [4:0]SR (SR uses OPN-style 5-bit D2R)
+  const unsigned char reg4 = ((dt << SGU_OP4_DT_SHIFT) & SGU_OP4_DT_MASK)
+    | (sr & SGU_OP4_SR_MASK);
+
+  // R5: [7:5]DELAY [4:3]KSR [2:0]WPAR
+  const unsigned char reg5 = ((delay << SGU_OP5_DELAY_SHIFT) & SGU_OP5_DELAY_MASK)
+    | ((ksr << SGU_OP5_KSR_SHIFT) & SGU_OP5_KSR_MASK)
+    | (wpar & SGU_OP5_WPAR_MASK);
+
+  // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
+  const unsigned char reg6 = (dam ? SGU_OP6_TRMD_BIT : 0)
+    | (dvb ? SGU_OP6_VIBD_BIT : 0)
+    | (sync ? SGU_OP6_SYNC_BIT : 0)
+    | (ring ? SGU_OP6_RING_BIT : 0)
+    | ((modIn << SGU_OP6_MOD_SHIFT) & SGU_OP6_MOD_MASK)
+    | ((tl >> SGU_OP1_TL_OFFSET) & SGU_OP6_TL_MSB_BIT);
+
+  // R7: [7:5]OUT [4]AR_msb [3]DR_msb [2:0]WAVE
+  const unsigned char reg7 = (((op.enable ? outLvl : 0) << SGU_OP7_OUT_SHIFT) & SGU_OP7_OUT_MASK)
+    | ((ar >> SGU_OP2_AR_OFFSET) ? SGU_OP7_AR_MSB_BIT : 0)
+    | ((dr >> SGU_OP2_DR_OFFSET) ? SGU_OP7_DR_MSB_BIT : 0)
+    | (wave & SGU_OP7_WAVE_MASK);
+
+  opWrite(ch, o, 0x00, reg0);
+  opWrite(ch, o, 0x01, reg1);
+  opWrite(ch, o, 0x02, reg2);
+  opWrite(ch, o, 0x03, reg3);
+  opWrite(ch, o, 0x04, reg4);
+  opWrite(ch, o, 0x05, reg5);
+  opWrite(ch, o, 0x06, reg6);
+  opWrite(ch, o, 0x07, reg7);
+
+  return;
+  logD("SGU op ch=%d op=%d regs: %02X %02X %02X %02X %02X %02X %02X %02X",
+    ch,
+    o,
+    static_cast<unsigned int>(reg0),
+    static_cast<unsigned int>(reg1),
+    static_cast<unsigned int>(reg2),
+    static_cast<unsigned int>(reg3),
+    static_cast<unsigned int>(reg4),
+    static_cast<unsigned int>(reg5),
+    static_cast<unsigned int>(reg6),
+    static_cast<unsigned int>(reg7));
+
+  logD("SGU op ch=%d op=%d dec: TRM=%u VIB=%u FIX=%u MUL=%u KSL=%u TL=%u AR=%u DR=%u SL=%u RR=%u DT=%u SR=%u DELAY=%u KSR=%u WPAR=%u TRMD=%u VIBD=%u SYNC=%u RING=%u MOD=%u OUT=%u WAVE=%u",
+    ch,
+    o,
+    (SGU_OP0_TRM(reg0) != 0),
+    (SGU_OP0_VIB(reg0) != 0),
+    (SGU_OP0_FIX(reg0) != 0),
+    static_cast<unsigned int>(SGU_OP0_MUL(reg0)),
+    static_cast<unsigned int>(SGU_OP1_KSL(reg1)),
+    static_cast<unsigned int>(SGU_OP16_TL(reg1, reg6)),
+    static_cast<unsigned int>(SGU_OP27_AR(reg2, reg7)),
+    static_cast<unsigned int>(SGU_OP27_DR(reg2, reg7)),
+    static_cast<unsigned int>(SGU_OP3_SL(reg3)),
+    static_cast<unsigned int>(SGU_OP3_RR(reg3)),
+    static_cast<unsigned int>(SGU_OP4_DT(reg4)),
+    static_cast<unsigned int>(SGU_OP4_SR(reg4)),
+    static_cast<unsigned int>(SGU_OP5_DELAY(reg5)),
+    static_cast<unsigned int>(SGU_OP5_KSR(reg5)),
+    static_cast<unsigned int>(SGU_OP5_WPAR(reg5)),
+    (SGU_OP6_TRMD(reg6) != 0),
+    (SGU_OP6_VIBD(reg6) != 0),
+    (SGU_OP6_SYNC(reg6) != 0),
+    (SGU_OP6_RING(reg6) != 0),
+    static_cast<unsigned int>(SGU_OP6_MOD(reg6)),
+    static_cast<unsigned int>(SGU_OP7_OUT(reg7)),
+    static_cast<unsigned int>(SGU_OP7_WAVE(reg7)));
+}
+
+static const unsigned char oplToSguWaveformMap[8]={
+  /* 0: SINE         -> */ SGU_WAVE_SINE,
+  /* 1: HALF_SINE    -> */ SGU_WAVE_SINE,
+  /* 2: ABS_SINE     -> */ SGU_WAVE_SINE,
+  /* 3: PULSE_SINE   -> */ SGU_WAVE_SINE,
+  /* 4: ALT_SINE     -> */ SGU_WAVE_SINE,
+  /* 5: ABS_ALT_SINE -> */ SGU_WAVE_SINE,
+  /* 6: SQUARE       -> */ SGU_WAVE_PULSE,
+  /* 7: LOG_SAW      -> */ SGU_WAVE_SAWTOOTH,
+};
+
+static const unsigned char suToSguWaveformMap[8]={
+  /* 0: PULSE          -> */ SGU_WAVE_PULSE,
+  /* 1: SAWTOOTH       -> */ SGU_WAVE_SAWTOOTH,
+  /* 2: SINE           -> */ SGU_WAVE_SINE,
+  /* 3: TRIANGLE       -> */ SGU_WAVE_TRIANGLE,
+  /* 4: NOISE          -> */ SGU_WAVE_NOISE,
+  /* 5: PERIODIC_NOISE -> */ SGU_WAVE_PERIODIC_NOISE,
+  /* 6: XOR_SINE       -> */ SGU_WAVE_SINE,
+  /* 7: XOR_TRIANGLE   -> */ SGU_WAVE_TRIANGLE,
+};
+
+static void setEsfmRouting(DivInstrumentESFM& esfm,
+    const unsigned char modIn[SGU_OP_PER_CH],
+    const unsigned char outLvl[SGU_OP_PER_CH]) {
+  for (int o=0; o<SGU_OP_PER_CH; o++) {
+    esfm.op[o].modIn=modIn[o];
+    esfm.op[o].outLvl=outLvl[o];
+  }
+}
+
+// Convert C64 waveform to SGU waveform
+static unsigned char sguC64Wave(const DivInstrumentC64& c64, bool periodicNoise) {
+  // C64 wave bits: 4=noise, 2=pulse, 1=saw, 0=tri (combined waveforms possible)
+  if (c64.noiseOn) {
+    return periodicNoise ? SGU_WAVE_PERIODIC_NOISE : SGU_WAVE_NOISE;
+  }
+  if (c64.pulseOn) return SGU_WAVE_PULSE;
+  if (c64.sawOn) return SGU_WAVE_SAWTOOTH;
+  if (c64.triOn) return SGU_WAVE_TRIANGLE;
+  return SGU_WAVE_PULSE; // default
+}
+
 void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
   if (ins==NULL) return;
 
-  if (ins->type==DIV_INS_AMIGA || ins->amiga.useSample) {
-    chan[ch].pcm=true;
-    writeControl(ch);
-    writeControlUpper(ch);
-    return;
-  }
+  if (chan[ch].insChanged) {
+    if (ins->type==DIV_INS_AMIGA || ins->amiga.useSample) {
+      chan[ch].pcm=true;
+      writeControl(ch);
+      writeControlUpper(ch);
+      return;
+    }
 
-  chan[ch].pcm=false;
+    chan[ch].pcm=false;
 
-  DivInstrumentFM fm=ins->fm;
-  DivInstrumentESFM esfm=ins->esfm;
+    chan[ch].state.fm=ins->fm;
+    chan[ch].state.esfm=ins->esfm;
 
-  for (int o=0; o<SGU_OP_PER_CH; o++) {
+    if (ins->type==DIV_INS_OPM) {
+      // OPM has operators 1 and 2 swapped
+      std::swap(chan[ch].state.fm.op[1],chan[ch].state.fm.op[2]);
+      std::swap(chan[ch].state.esfm.op[1],chan[ch].state.esfm.op[2]);
+    }
 
-  static const unsigned char oplToSguWaveformMap[8]={
-    /* 0: SINE         -> */ SGU_WAVE_SINE,
-    /* 1: HALF_SINE    -> */ SGU_WAVE_PULSE,
-    /* 2: ABS_SINE     -> */ SGU_WAVE_SINE,
-    /* 3: PULSE_SINE   -> */ SGU_WAVE_TRIANGLE,
-    /* 4: ALT_SINE     -> */ SGU_WAVE_PULSE,
-    /* 5: ABS_ALT_SINE -> */ SGU_WAVE_PULSE,
-    /* 6: SQUARE       -> */ SGU_WAVE_PULSE,
-    /* 7: LOG_SAW      -> */ SGU_WAVE_SAWTOOTH,
-  };
+    for (int o=0; o<SGU_OP_PER_CH; o++) {
+      DivInstrumentFM& fm=chan[ch].state.fm;
+      DivInstrumentESFM& esfm=chan[ch].state.esfm;
+      DivInstrumentFM::Operator& op=chan[ch].state.fm.op[o];
+      DivInstrumentESFM::Operator& opE=chan[ch].state.esfm.op[o];
 
-  /* Convert waveforms */
-  switch (ins->type) {
-    case DIV_INS_OPM:
-      // OPM has no waveform select (sine only)
-      fm.op[o].ws=SGU_WAVE_SINE;
-      break;
-    case DIV_INS_ESFM:
-    case DIV_INS_FM:
-    case DIV_INS_OPL:
-    case DIV_INS_OPLL:
-    case DIV_INS_OPZ:
-      fm.op[o].ws=oplToSguWaveformMap[fm.op[o].ws & 0x07];
-      break;
-    default:
-      break;
-  }
+  /* applyOpRegs applies the following regs:
+    op.am   op.dr   op.mult op.tl   opE.delay
+    op.ar   op.dt   op.rr   op.vib  opE.fixed
+    op.d2r  op.dvb  op.rs   op.ws   opE.modIn
+    op.dam  op.ksl  op.sl           opE.outLvl
+  */
+
+      /* Convert waveforms */
+      switch (ins->type) {
+        case DIV_INS_FM:
+        case DIV_INS_OPM:
+          // OPN/OPM has no waveform select (sine only)
+          op.ws=SGU_WAVE_SINE;
+          break;
+        case DIV_INS_ESFM:
+        case DIV_INS_OPL:
+        case DIV_INS_OPLL:
+        case DIV_INS_OPZ:
+          op.ws=oplToSguWaveformMap[op.ws & 0x07];
+          break;
+        case DIV_INS_SU:
+          op.ws=suToSguWaveformMap[op.ws & 0x07];
+          break;
+        default:
+          break;
+      }
 
   /* ### FM operator parameter support matrix
          When shown, it's bits per parameter
@@ -693,8 +759,8 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
       TL  |  6  |  7  |  7  |  7  |  7  | 6/4 |  6  |  6  |
       KSL |  2  |  -  |  -  |  -  |  -  |  2  |  2  |  2  |
       KSR |  1  |  2  |  2  |  2  |  2  |  1  |  1  |  2  |
-    SSG-EG|  -  |  -  |  -  |  4  |  -  |  -  |  -  |  3  |
-      DT  |  -  |  3  |  3  |  3  |  3  |  -  |  -  |  -  |
+    SSG-EG|  -  |  -  |  -  |  4  |  -  |  -  |  -  |  1  |
+      DT  |  -  |  3  |  3  |  3  |  3  |  -  |  -  |  3  |
       DT2 |  -  |  2  |  -  |  -  |  -  |  -  |  -  |  -  |
   AM  TRM |  1  |  1  |  -  |  1  |  1  |  1  |  1  |  1  |
       TRMD|  1  |  2  |  -  |  2  |  2  |  -  |  1  |  1  |
@@ -765,17 +831,17 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
             break;
           case 1: // (1+2)→3→4→out
             setEsfmRouting(esfm,
-              (const unsigned char[]){fb,0,7,7},
+              (const unsigned char[]){fb,7,7,7},
               (const unsigned char[]){0,0,0,7});
             break;
           case 2: // 1+(2→3)→4→out
             setEsfmRouting(esfm,
-              (const unsigned char[]){fb,0,7,7},
+              (const unsigned char[]){fb,7,7,7},
               (const unsigned char[]){0,0,0,7});
             break;
           case 3: // (1→2)+3→4→out
             setEsfmRouting(esfm,
-              (const unsigned char[]){fb,7,0,7},
+              (const unsigned char[]){fb,7,7,7},
               (const unsigned char[]){0,0,0,7});
             break;
           case 4: // (1→2)+(3→4)→out
@@ -801,49 +867,27 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
         }
       }
       break;
+    case DIV_INS_OPLL:
+      // OPLL-style 2-operator FM (very similar to OPL)
+      // Scale TL for carrier (op1) from 4-bit to 7-bit
+      fm.op[1].tl=(unsigned char)(((fm.op[1].tl & 0x0f) << 3) | 0x04);
+      [[fallthrough]];
     case DIV_INS_OPL:
       // OPL-style 2-operator FM
       // Only operators 0 and 1 are used; disable 2 and 3
       {
-        esfm=DivInstrumentESFM();
+        const unsigned char fb=fm.fb&7;
         // OPL algorithm: 0 = modulator→carrier, 1 = additive
-        const bool algAdd=(fm.alg&1);
-        esfm.op[0].modIn=fm.fb&7;
-        esfm.op[0].outLvl=algAdd?7:0;
-        esfm.op[1].modIn=algAdd?0:7;
-        esfm.op[1].outLvl=7;
-        // Disable operators 2 and 3
-        for (int i=2; i<4; i++) {
-          fm.op[i].enable=false;
-          fm.op[i].tl=127;
-          esfm.op[i].outLvl=0;
-          esfm.op[i].modIn=0;
-        }
-      }
-      break;
-    case DIV_INS_OPLL:
-      // OPLL-style 2-operator FM (very similar to OPL)
-      {
-        esfm=DivInstrumentESFM();
-        // Scale TL for carrier (op1) from 4-bit to 7-bit
-        fm.op[1].tl=(unsigned char)(((fm.op[1].tl & 0x0f) << 3) | 0x04);
-        // Convert KSR
-        for (int i=0; i<2; i++) {
-          fm.op[i].rs=(fm.op[i].ksr&1)?3:0;
-          fm.op[i].dam=fm.ams&1;
-          fm.op[i].dvb=fm.fms&1;
-        }
-        const bool algAdd=(fm.alg&1);
-        esfm.op[0].modIn=fm.fb&7;
-        esfm.op[0].outLvl=algAdd?7:0;
-        esfm.op[1].modIn=algAdd?0:7;
-        esfm.op[1].outLvl=7;
-        // Disable operators 2 and 3
-        for (int i=2; i<4; i++) {
-          fm.op[i].enable=false;
-          fm.op[i].tl=127;
-          esfm.op[i].outLvl=0;
-          esfm.op[i].modIn=0;
+        if (fm.alg&1) {
+          // Additive: both operators output to mix
+          setEsfmRouting(esfm,
+              (const unsigned char[]){fb,0,0,0},
+              (const unsigned char[]){7,7,0,0});
+        } else {
+          // Modulation: carrier (op1) output only
+          setEsfmRouting(esfm,
+              (const unsigned char[]){fb,7,0,0},
+              (const unsigned char[]){0,7,0,0});
         }
       }
       break;
@@ -852,13 +896,12 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
       // Single oscillator mapped to op3 - set routing only
       // ADSR conversion handled in first switch
       {
-        esfm=DivInstrumentESFM();
-        for (int o=0; o<3; o++) {
+        for (int o=0; o<SGU_OP_PER_CH; o++) {
           esfm.op[o].outLvl=0;
           esfm.op[o].modIn=0;
         }
-        esfm.op[3].modIn=0;
-        esfm.op[3].outLvl=7;
+        esfm.op[SGU_OP_PER_CH-1].modIn=0;
+        esfm.op[SGU_OP_PER_CH-1].outLvl=7;
       }
       break;
     case DIV_INS_C64:
@@ -866,46 +909,12 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
       // C64/SID2 - single carrier on op3, plus channel settings
       // ADSR conversion handled in first switch
       {
-        esfm=DivInstrumentESFM();
         for (int o=0; o<3; o++) {
           esfm.op[o].outLvl=0;
           esfm.op[o].modIn=0;
         }
         esfm.op[3].modIn=0;
         esfm.op[3].outLvl=7;
-
-        // Handle duty cycle
-        if (ins->c64.resetDuty || chan[ch].insChanged) {
-          const unsigned short dutyClamp=(ins->c64.duty>4095)?4095:ins->c64.duty;
-          chan[ch].duty=(unsigned char)(dutyClamp>>5);
-          chan[ch].virtual_duty=(unsigned short)chan[ch].duty<<5;
-          chWrite(ch,SGU1_CHN_DUTY,chan[ch].duty);
-        }
-
-        // Handle filter settings
-        bool updateFilter=false;
-        if (!ins->c64.toFilter) {
-          if (chan[ch].control!=0) {
-            chan[ch].control=0;
-            updateFilter=true;
-          }
-        } else if (ins->c64.initFilter || chan[ch].insChanged) {
-          if (ins->c64.initFilter) {
-            const unsigned int cutClamp=(ins->c64.cut>2047)?2047:ins->c64.cut;
-            chan[ch].cutoff=(unsigned short)((cutClamp*65535U+1023U)/2047U);
-            chan[ch].baseCutoff=chan[ch].cutoff;
-            const unsigned char resClamp=ins->c64.res&0x0f;
-            chan[ch].res=(unsigned char)((resClamp<<4)|resClamp);
-            chan[ch].control=(ins->c64.lp?2:0)|(ins->c64.hp?4:0)|(ins->c64.bp?8:0);
-            updateFilter=true;
-          }
-        }
-        if (updateFilter) {
-          chWrite(ch,SGU1_CHN_CUTOFF_L,chan[ch].cutoff&0xff);
-          chWrite(ch,SGU1_CHN_CUTOFF_H,chan[ch].cutoff>>8);
-          chWrite(ch,SGU1_CHN_RESON,chan[ch].res);
-          writeControl(ch);
-        }
       }
       break;
     default:
@@ -914,29 +923,20 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
 
   /* Convert ADSR envelope parameters */
   switch (ins->type) {
-    case DIV_INS_OPLL:
-      {
-        // Convert KSR and apply global AMS/FMS
-        fm.op[o].rs=(fm.op[o].ksr&1)?3:0;
-        fm.op[o].dam=fm.ams&1;
-        fm.op[o].dvb=fm.fms&1;
-      }
-      [[fallthrough]];
+      case DIV_INS_OPLL:
       case DIV_INS_OPL:
       case DIV_INS_ESFM:
-      {
-        // AR/DR need shifting: ESFM/OPL uses 4-bit rates, SGU expects 5-bit
-        fm.op[o].ar=(unsigned char)(((fm.op[o].ar & 0x0f) << 1) | 1);
-        fm.op[o].dr=(unsigned char)(((fm.op[o].dr & 0x0f) << 1) | 1);
-        // EGT=0: infinite sustain (SR=0), EGT=1: no sustain (SR=max, skip to release)
-        fm.op[o].d2r = fm.op[o].egt ? 0x1f : 0;
-      }
-      break;
-    case DIV_INS_FM:
-    case DIV_INS_OPM:
-    case DIV_INS_OPZ:
-      // OPN/OPM/OPZ already have 5-bit AR/DR and 7-bit TL - use as-is
-      break;
+        {
+          // AR/DR need shifting: ESFM/OPL uses 4-bit rates, SGU expects 5-bit
+          op.ar=rate4_to_rate5(op.ar & 0x0f, ins->type);
+          op.dr=rate4_to_rate5(op.dr & 0x0f, ins->type);
+        }
+        break;
+      case DIV_INS_FM:
+      case DIV_INS_OPM:
+      case DIV_INS_OPZ:
+        // OPN/OPM/OPZ already have 5-bit AR/DR and 7-bit TL - use as-is
+        break;
     case DIV_INS_C64:
       {
         // C64 uses single carrier on op3; disable modulators
@@ -989,7 +989,6 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
           fm.op[o].d2r=0;
           fm.op[o].tl=0;
           fm.op[o].mult=1;
-          fm.op[o].ws=SGU_WAVE_SAWTOOTH;
         } else {
           fm.op[o].tl=127;
           fm.op[o].enable=false;
@@ -1020,6 +1019,23 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
 
   /* Convert Misc parameters */
   switch (ins->type) {
+    case DIV_INS_OPLL:
+      {
+        // Convert KSR and apply global AMS/FMS
+        op.rs=(op.ksr&1)?3:0;
+        op.dam=fm.ams&1;
+        op.dvb=fm.fms&1;
+      }
+      [[fallthrough]];
+      case DIV_INS_OPL:
+      case DIV_INS_ESFM:
+        {
+          // SUS=1: infinite sustain (SR=0), SUS=0: no sustain (SR=RR)
+          op.d2r = op.sus ? 0 : rate4_to_rate5(op.rr & 0x0f, ins->type);
+          // No detune on ESFM
+          op.dt=0;
+        }
+        break;
     case DIV_INS_OPZ:
       {
         // OPZ uses EGT flag for fixed frequency mode
@@ -1031,42 +1047,38 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
       {
         // Map UI detune to Yamaha DT1 encoding for Yamaha FM chips (matches platform replayers).
         static const unsigned char dtTable[8]={7,6,5,0,1,2,3,4};
-        fm.op[o].dt=dtTable[fm.op[o].dt&7];
+        op.dt=dtTable[fm.op[o].dt&7];
       }
       break;
     default:
       break;
   }
-  }
 
-  chan[ch].state.fm=fm;
-  chan[ch].state.esfm=esfm;
+      applyOpRegs(ch, o, op, opE);
+    }
 
-  for (int o=0; o<SGU_OP_PER_CH; o++) {
-    applyOpRegs(ch, o, fm.op[o], esfm.op[o]);
   }
 }
 
 int DivPlatformSGU::dispatch(DivCommand c) {
+  DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_ESFM);
+
   switch (c.cmd) {
     case DIV_CMD_NOTE_ON: {
-      DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_ESFM);
-
       chan[c.chan].macroInit(ins);
-      memset(chan[c.chan].opsState, 0, sizeof(chan[c.chan].opsState));
       if (!chan[c.chan].std.vol.will) {
         chan[c.chan].outVol=chan[c.chan].vol;
       }
 
-      // Handle PCM mode transition
+      commitState(c.chan,ins);
+      chan[c.chan].insChanged=false;
+
       if (chan[c.chan].pcm && !(ins->type==DIV_INS_AMIGA || ins->amiga.useSample)) {
         chan[c.chan].pcm=(ins->type==DIV_INS_AMIGA || ins->amiga.useSample);
         writeControl(c.chan);
         writeControlUpper(c.chan);
       }
       chan[c.chan].pcm=(ins->type==DIV_INS_AMIGA || ins->amiga.useSample);
-
-      // Handle PCM sample lookup
       if (chan[c.chan].pcm) {
         if (c.value!=DIV_NOTE_NULL) {
           chan[c.chan].sample=ins->amiga.getSample(c.value);
@@ -1079,15 +1091,6 @@ int DivPlatformSGU::dispatch(DivCommand c) {
         chan[c.chan].sampleNoteDelta=0;
       }
 
-      commitState(c.chan,ins);
-      chan[c.chan].insChanged=false;
-      // ESFM instruments use half volume to match ESFM chip output levels
-      if (ins->type==DIV_INS_ESFM) {
-        chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol>>1);
-      } else {
-        chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
-      }
-
       if (c.value!=DIV_NOTE_NULL) {
         chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value);
         chan[c.chan].note=c.value;
@@ -1098,6 +1101,11 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       chan[c.chan].released=false;
       chan[c.chan].hwSeqPos=0;
       chan[c.chan].hwSeqDelay=0;
+      chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].vol);
+      if (!parent->song.compatFlags.brokenOutVol && !chan[c.chan].std.vol.will) {
+        chan[c.chan].outVol=chan[c.chan].vol;
+      }
+      chan[c.chan].insChanged=false;
       break;
     }
     case DIV_CMD_NOTE_OFF:
@@ -1109,7 +1117,6 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       chan[c.chan].macroInit(NULL);
       break;
     case DIV_CMD_NOTE_OFF_ENV:
-      chan[c.chan].active=false;
       chan[c.chan].keyOff=true;
       chan[c.chan].keyOn=false;
       chan[c.chan].std.release();
@@ -1118,20 +1125,18 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       chan[c.chan].std.release();
       chan[c.chan].released=true;
       break;
-    case DIV_CMD_VOLUME: {
-      chan[c.chan].vol=c.value;
-      if (!chan[c.chan].std.vol.has) {
-        chan[c.chan].outVol=c.value;
-      }
-      DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_ESFM);
-      // ESFM instruments use half volume to match ESFM chip output levels
-      if (ins->type==DIV_INS_ESFM) {
-        chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol>>1);
-      } else {
-        chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
+    case DIV_CMD_GET_VOLMAX:
+      return ins->type==DIV_INS_ESFM ? 0x3F : 0x7F;
+      break;
+    case DIV_CMD_VOLUME:
+      if (chan[c.chan].vol!=c.value) {
+        chan[c.chan].vol=c.value;
+        if (!chan[c.chan].std.vol.has) {
+          chan[c.chan].outVol=c.value;
+          if (chan[c.chan].active) chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
+        }
       }
       break;
-    }
     case DIV_CMD_GET_VOLUME:
       return chan[c.chan].vol;
       break;
@@ -1141,33 +1146,32 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       }
       chan[c.chan].ins=c.value;
       break;
-    case DIV_CMD_PANNING: {
-      // SGU panning is per-channel, int8_t range (-128 to +127)
-      // c.value-c.value2 gives -255 to +255, so scale by 2
-      chan[c.chan].pan=(signed char)((c.value-c.value2)/2);
-      chWrite(c.chan,SGU1_CHN_PAN,chan[c.chan].pan);
-      break;
-    }
     case DIV_CMD_PITCH:
       chan[c.chan].pitch=c.value;
       chan[c.chan].freqChanged=true;
       break;
+    case DIV_CMD_PRE_PORTA:
+      if (!chan[c.chan].inPorta && c.value && !parent->song.compatFlags.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NOTE_FREQUENCY(chan[c.chan].note);
+      chan[c.chan].inPorta=c.value;
+      break;
     case DIV_CMD_NOTE_PORTA: {
-      int destFreq=NOTE_FREQUENCY(c.value2+chan[c.chan].sampleNoteDelta);
+      int destFreq=NOTE_FREQUENCY(c.value2);
+      int newFreq;
       bool return2=false;
       if (destFreq>chan[c.chan].baseFreq) {
-        chan[c.chan].baseFreq+=c.value*((parent->song.compatFlags.linearPitch)?1:(1+(chan[c.chan].baseFreq>>9)));
-        if (chan[c.chan].baseFreq>=destFreq) {
-          chan[c.chan].baseFreq=destFreq;
+        newFreq=chan[c.chan].baseFreq+c.value;
+        if (newFreq>=destFreq) {
+          newFreq=destFreq;
           return2=true;
         }
       } else {
-        chan[c.chan].baseFreq-=c.value*((parent->song.compatFlags.linearPitch)?1:(1+(chan[c.chan].baseFreq>>9)));
-        if (chan[c.chan].baseFreq<=destFreq) {
-          chan[c.chan].baseFreq=destFreq;
+        newFreq=chan[c.chan].baseFreq-c.value;
+        if (newFreq<=destFreq) {
+          newFreq=destFreq;
           return2=true;
         }
       }
+      chan[c.chan].baseFreq=newFreq;
       chan[c.chan].freqChanged=true;
       if (return2) {
         chan[c.chan].inPorta=false;
@@ -1177,330 +1181,108 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     }
     case DIV_CMD_LEGATO: {
       if (chan[c.chan].insChanged) {
-        DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_ESFM);
+        DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_OPM);
         commitState(c.chan,ins);
         chan[c.chan].insChanged=false;
       }
-      chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value+chan[c.chan].sampleNoteDelta+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val):(0)));
-      chan[c.chan].note=c.value;
+      chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val):(0)));
       chan[c.chan].freqChanged=true;
       break;
     }
-    case DIV_CMD_FM_MULT: {
-      unsigned int o=c.value;
-      if (o >= 4) break;
-      DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-      DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-      op.mult=c.value2&15;
-      applyOpRegs(c.chan,o,op,opE);
+    case DIV_CMD_PANNING: {
+      chan[c.chan].pan=parent->convertPanSplitToLinearLR(c.value,c.value2,254)-127;
+      chWrite(c.chan,0x03,chan[c.chan].pan);
       break;
     }
-    case DIV_CMD_FM_TL: {
-      unsigned int o=c.value;
-      if (o >= 4) break;
-      DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-      DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-      op.tl=c.value2&63;
-      applyOpRegs(c.chan,o,op,opE);
+    // case DIV_CMD_WAVE:
+    //   chan[c.chan].wave=c.value&7;
+    //   writeControl(c.chan);
+    //   break;
+    case DIV_CMD_STD_NOISE_MODE:
+      chan[c.chan].duty=c.value&127;
+      chan[c.chan].virtual_duty=(unsigned short)chan[c.chan].duty << 5;
+      chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
       break;
-    }
-    case DIV_CMD_FM_AR: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.ar=c.value2&31;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.ar=c.value2&31;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_FM_DR: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.dr=c.value2&31;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.dr=c.value2&31;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_FM_SL: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.sl=c.value2&15;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.sl=c.value2&15;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_FM_RR: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.rr=c.value2&15;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.rr=c.value2&15;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_FM_AM: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.am=c.value2&1;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.am=c.value2&1;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_FM_VIB: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.vib=c.value2&1;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.vib=c.value2&1;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_FM_SUS: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.sus=c.value2&1;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.sus=c.value2&1;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_FM_KSR: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.ksr=c.value2&1;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.ksr=c.value2&1;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_FM_WS: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.ws=c.value2&7;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.ws=c.value2&7;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    // KSL
-    case DIV_CMD_FM_RS: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          op.ksl=c.value2&3;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        op.ksl=c.value2&3;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
     case DIV_CMD_FM_AM_DEPTH: {
-      unsigned int o=c.value;
-      if (o >= 4) break;
-      DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-      DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-      op.dam=c.value2&1;
-      applyOpRegs(c.chan,o,op,opE);
+      switch (ins->type) {
+        case DIV_INS_OPM:
+        case DIV_INS_FM:
+        case DIV_INS_OPZ: {
+          // Channel-level AMS to per-operator dam
+          unsigned char dam=(c.value>=2)?1:0;  // AMS 2-3 → full TRMD
+          for (unsigned int o=0; o<SGU_OP_PER_CH; o++) {
+            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
+            op.dam=dam;
+            applyOpRegs(c.chan, o, op, chan[c.chan].state.esfm.op[o]);
+          }
+          break;
+          }
+        case DIV_INS_OPL:
+        case DIV_INS_OPLL: {
+          // Per-operator dam directly
+          unsigned char dam=c.value&1;
+          for (unsigned int o=0; o<SGU_OP_PER_CH; o++) {
+            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
+            op.dam=dam;
+            applyOpRegs(c.chan, o, op, chan[c.chan].state.esfm.op[o]);
+          }
+          break;
+          }
+        case DIV_INS_ESFM: {
+            // operator dam
+            unsigned int o=c.value;
+            if (o >= 4) break;
+            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
+            op.dam=c.value2&1;
+            applyOpRegs(c.chan, o, op, chan[c.chan].state.esfm.op[o]);
+            break;
+          }
+        default:
+          logW("DIV_CMD_FM_AM_DEPTH on unsupported instrument type %d", (int)ins->type);
+          break;
+      }
       break;
     }
     case DIV_CMD_FM_PM_DEPTH: {
-      unsigned int o=c.value;
-      if (o >= 4) break;
-      DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-      DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-      op.dvb=c.value2&1;
-      applyOpRegs(c.chan,o,op,opE);
-      break;
-    }
-    case DIV_CMD_FM_FIXFREQ: {
-      unsigned int o=c.value&3;
-      bool isFNum=c.value&4;
-      DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-      if (!opE.fixed) break;
-      if (isFNum) {
-        opE.dt=(c.value2)&0xff;
-        opE.ct=(opE.ct&(~3))|((c.value2>>8)&3);
-        chan[c.chan].freqChanged=true;
-      } else {
-        opE.ct=(opE.ct&(~(7<<2)))|((c.value2&7)<<2);
-        chan[c.chan].freqChanged=true;
+      switch (ins->type) {
+        case DIV_INS_OPM:
+        case DIV_INS_FM:
+        case DIV_INS_OPZ: {
+          // Channel-level FMS to per-operator dvb
+          unsigned char dvb=(c.value>=4)?1:0;  // FMS 4-7 → full VIBD
+          for (unsigned int o=0; o<SGU_OP_PER_CH; o++) {
+            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
+            op.dvb=dvb;
+            applyOpRegs(c.chan, o, op, chan[c.chan].state.esfm.op[o]);
+          }
+          break;
+          }
+        case DIV_INS_OPL:
+        case DIV_INS_OPLL: {
+          // Per-operator dvb directly
+          unsigned char dvb=c.value&1;
+          for (unsigned int o=0; o<SGU_OP_PER_CH; o++) {
+            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
+            op.dvb=dvb;
+            applyOpRegs(c.chan, o, op, chan[c.chan].state.esfm.op[o]);
+          }
+          break;
+          }
+        case DIV_INS_ESFM: {
+            // operator dvb
+            unsigned int o=c.value;
+            if (o >= 4) break;
+            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
+            op.dvb=c.value2&1;
+            applyOpRegs(c.chan, o, op, chan[c.chan].state.esfm.op[o]);
+            break;
+          }
+        default:
+          logW("DIV_CMD_FM_PM_DEPTH on unsupported instrument type %d", (int)ins->type);
+          break;
       }
       break;
     }
-    case DIV_CMD_ESFM_OP_PANNING: {
-      unsigned int o=c.value;
-      if (o >= 4) break;
-      DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-      DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-      opE.left=(c.value2&0xf0)!=0;
-      opE.right=(c.value2&0x0f)!=0;
-      applyOpRegs(c.chan,o,op,opE);
-      break;
-    }
-    case DIV_CMD_ESFM_OUTLVL: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          opE.outLvl=c.value2&7;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        opE.outLvl=c.value2&7;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_ESFM_MODIN: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          opE.modIn=c.value2&7;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        opE.modIn=c.value2&7;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_ESFM_ENV_DELAY: {
-      if (c.value<0) {
-        for (int o=0; o<SGU_OP_PER_CH; o++) {
-          DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-          DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-          opE.delay=c.value2&7;
-          applyOpRegs(c.chan,o,op,opE);
-        }
-      } else {
-        unsigned int o=c.value;
-        if (o >= 4) break;
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        opE.delay=c.value2&7;
-        applyOpRegs(c.chan,o,op,opE);
-      }
-      break;
-    }
-    case DIV_CMD_STD_NOISE_MODE: {
-      DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[3];
-      DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[3];
-      chan[c.chan].state.esfm.noise=c.value&3;
-      applyOpRegs(c.chan,3,op,opE);
-      break;
-    }
-    case DIV_CMD_FM_DT: {
-      unsigned int o=c.value;
-      if (o >= 4) break;
-      DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-      if (opE.fixed) break;
-      opE.dt=c.value2-0x80;
-      chan[c.chan].freqChanged=true;
-      break;
-    }
-    case DIV_CMD_FM_HARD_RESET:
-      chan[c.chan].hardReset=c.value;
-      break;
     case DIV_CMD_MACRO_OFF:
       chan[c.chan].std.mask(c.value,true);
       break;
@@ -1510,162 +1292,12 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     case DIV_CMD_MACRO_RESTART:
       chan[c.chan].std.restart(c.value);
       break;
-    case DIV_CMD_GET_VOLMAX:
-      return 63;
-      break;
-    case DIV_CMD_PRE_PORTA:
-      if (chan[c.chan].active && c.value2) {
-        if (parent->song.compatFlags.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_ESFM));
-      }
-      if (!chan[c.chan].inPorta && c.value && !parent->song.compatFlags.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) {
-        chan[c.chan].baseFreq=NOTE_FREQUENCY(chan[c.chan].note);
-      }
-      chan[c.chan].inPorta=c.value;
-      break;
-    case DIV_CMD_C64_EXTENDED:
-      switch (c.value>>4) {
-        case 0x0: // attack - set AR on all operators (convert 4-bit C64 to 5-bit SGU)
-          for (int o=0; o<SGU_OP_PER_CH; o++) {
-            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-            op.ar=((c.value&15)<<1)|1;
-            opWrite(c.chan,o,SGU_OP_REG_AR_DR,((op.ar&0x0f)<<SGU_OP2_AR_SHIFT)|(op.dr&SGU_OP2_DR_MASK));
-            opWrite(c.chan,o,SGU_OP_REG_OUT_WAVE,(chan[c.chan].state.esfm.op[o].outLvl<<SGU_OP7_OUT_SHIFT)|((op.ar&0x10)?SGU_OP7_AR_MSB_BIT:0)|((op.dr&0x10)?SGU_OP7_DR_MSB_BIT:0)|(op.ws&SGU_OP7_WAVE_MASK));
-          }
-          break;
-        case 0x1: // decay - set DR on all operators (convert 4-bit C64 to 5-bit SGU)
-          for (int o=0; o<SGU_OP_PER_CH; o++) {
-            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-            op.dr=((c.value&15)<<1)|1;
-            opWrite(c.chan,o,SGU_OP_REG_AR_DR,((op.ar&0x0f)<<SGU_OP2_AR_SHIFT)|(op.dr&SGU_OP2_DR_MASK));
-            opWrite(c.chan,o,SGU_OP_REG_OUT_WAVE,(chan[c.chan].state.esfm.op[o].outLvl<<SGU_OP7_OUT_SHIFT)|((op.ar&0x10)?SGU_OP7_AR_MSB_BIT:0)|((op.dr&0x10)?SGU_OP7_DR_MSB_BIT:0)|(op.ws&SGU_OP7_WAVE_MASK));
-          }
-          break;
-        case 0x2: // sustain - set SL on all operators
-          for (int o=0; o<SGU_OP_PER_CH; o++) {
-            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-            op.sl=c.value&15;
-            opWrite(c.chan,o,SGU_OP_REG_SL_RR,(op.sl<<SGU_OP3_SL_SHIFT)|(op.rr&SGU_OP3_RR_MASK));
-          }
-          break;
-        case 0x3: // release - set RR on all operators
-          for (int o=0; o<SGU_OP_PER_CH; o++) {
-            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-            op.rr=c.value&15;
-            opWrite(c.chan,o,SGU_OP_REG_SL_RR,(op.sl<<SGU_OP3_SL_SHIFT)|(op.rr&SGU_OP3_RR_MASK));
-          }
-          break;
-        case 0x4: // ring mod - set RING bit on operators (each op rings with previous)
-          for (int o=0; o<SGU_OP_PER_CH; o++) {
-            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-            DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-            unsigned char reg6=(op.dam?SGU_OP6_TRMD_BIT:0)|(op.dvb?SGU_OP6_VIBD_BIT:0)|((c.value&1)?SGU_OP6_RING_BIT:0)|(opE.modIn<<SGU_OP6_MOD_SHIFT)|((op.tl>>6)&SGU_OP6_TL_MSB_BIT);
-            opWrite(c.chan,o,SGU_OP_REG_MOD,reg6);
-          }
-          break;
-        case 0x5: // sync - set SYNC bit on operators
-          for (int o=0; o<SGU_OP_PER_CH; o++) {
-            DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-            DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-            unsigned char reg6=(op.dam?SGU_OP6_TRMD_BIT:0)|(op.dvb?SGU_OP6_VIBD_BIT:0)|((c.value&1)?SGU_OP6_SYNC_BIT:0)|(opE.modIn<<SGU_OP6_MOD_SHIFT)|((op.tl>>6)&SGU_OP6_TL_MSB_BIT);
-            opWrite(c.chan,o,SGU_OP_REG_MOD,reg6);
-          }
-          break;
-        case 0x6: // filter control (ch3off in C64)
-          chan[c.chan].control=(chan[c.chan].control&7)|((c.value&1)<<3);
-          writeControl(c.chan);
-          break;
-        case 0x9: // phase reset
-          chan[c.chan].phaseReset=true;
-          writeControlUpper(c.chan);
-          break;
-        case 0xa: // envelope/gate on/off
-          chan[c.chan].gate=(c.value&1);
-          writeControl(c.chan);
-          break;
-        case 0xb: // filter on/off - use control bits
-          if (c.value&1) {
-            chan[c.chan].control|=7; // enable LP+BP+HP
-          } else {
-            chan[c.chan].control&=~7; // disable all filter modes
-          }
-          writeControl(c.chan);
-          break;
-      }
-      break;
-    // SoundUnit-specific commands
-    case DIV_CMD_WAVE: {
-      // Map SID wave bits to SGU operators: tri(0)→op0, saw(1)→op1, pulse(2)→op2, noise(3)→op3
-      // Each enabled wave gets MOD=0 (no modulation), OUT=7 (full output)
-      chan[c.chan].wave=c.value&0xf;
-      static const unsigned char sidToSguWave[4]={SGU_WAVE_TRIANGLE, SGU_WAVE_SAWTOOTH, SGU_WAVE_PULSE, SGU_WAVE_NOISE};
-      for (int o=0; o<SGU_OP_PER_CH; o++) {
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        DivInstrumentESFM::Operator& opE=chan[c.chan].state.esfm.op[o];
-        bool waveEnabled=(c.value>>o)&1;
-        if (waveEnabled) {
-          op.tl=0;  // full volume
-          op.ws=sidToSguWave[o];
-          opE.modIn=0;  // no modulation from previous
-          opE.outLvl=7;  // full output
-        } else {
-          opE.outLvl=0;  // no output
-        }
-        // Write operator registers
-        opWrite(c.chan,o,SGU_OP_REG_TL,(op.tl&SGU_OP1_TL_MASK)|(op.ksl<<SGU_OP1_KSL_SHIFT));
-        opWrite(c.chan,o,SGU_OP_REG_MOD,(op.dam?SGU_OP6_TRMD_BIT:0)|(op.dvb?SGU_OP6_VIBD_BIT:0)|(opE.modIn<<SGU_OP6_MOD_SHIFT)|((op.tl>>6)&SGU_OP6_TL_MSB_BIT));
-        opWrite(c.chan,o,SGU_OP_REG_OUT_WAVE,(opE.outLvl<<SGU_OP7_OUT_SHIFT)|((op.ar&0x10)?SGU_OP7_AR_MSB_BIT:0)|((op.dr&0x10)?SGU_OP7_DR_MSB_BIT:0)|(op.ws&SGU_OP7_WAVE_MASK));
-      }
-      writeControl(c.chan);
-      break;
-    }
     case DIV_CMD_C64_RESONANCE:
       chan[c.chan].res=c.value;
       chWrite(c.chan,SGU1_CHN_RESON,chan[c.chan].res);
       break;
     case DIV_CMD_C64_FILTER_MODE:
       chan[c.chan].control=c.value&15;
-      writeControl(c.chan);
-      break;
-    case DIV_CMD_C64_CUTOFF:
-      if (c.value>100) c.value=100;
-      chan[c.chan].baseCutoff=((c.value+2)*16383)/102;
-      if (!chan[c.chan].std.ex1.has) {
-        chan[c.chan].cutoff=chan[c.chan].baseCutoff;
-        chWrite(c.chan,SGU1_CHN_CUTOFF_L,chan[c.chan].cutoff&0xff);
-        chWrite(c.chan,SGU1_CHN_CUTOFF_H,chan[c.chan].cutoff>>8);
-      }
-      break;
-    case DIV_CMD_C64_FINE_CUTOFF:
-      chan[c.chan].baseCutoff=c.value*4;
-      if (!chan[c.chan].std.ex1.has) {
-        chan[c.chan].cutoff=chan[c.chan].baseCutoff;
-        chWrite(c.chan,SGU1_CHN_CUTOFF_L,chan[c.chan].cutoff&0xff);
-        chWrite(c.chan,SGU1_CHN_CUTOFF_H,chan[c.chan].cutoff>>8);
-      }
-      break;
-    case DIV_CMD_C64_FINE_DUTY:
-      chan[c.chan].duty=c.value&127;
-      chan[c.chan].virtual_duty=(unsigned short)chan[c.chan].duty<<5;
-      chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
-      break;
-    case DIV_CMD_C64_AD:
-      // Set AR and DR on all operators (convert 4-bit C64 to 5-bit SGU)
-      for (int o=0; o<SGU_OP_PER_CH; o++) {
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        op.ar=((c.value>>4)<<1)|1;
-        op.dr=((c.value&15)<<1)|1;
-        opWrite(c.chan,o,SGU_OP_REG_AR_DR,((op.ar&0x0f)<<SGU_OP2_AR_SHIFT)|(op.dr&SGU_OP2_DR_MASK));
-        opWrite(c.chan,o,SGU_OP_REG_OUT_WAVE,(chan[c.chan].state.esfm.op[o].outLvl<<SGU_OP7_OUT_SHIFT)|((op.ar&0x10)?SGU_OP7_AR_MSB_BIT:0)|((op.dr&0x10)?SGU_OP7_DR_MSB_BIT:0)|(op.ws&SGU_OP7_WAVE_MASK));
-      }
-      break;
-    case DIV_CMD_C64_SR:
-      // Set SL and RR on all operators
-      for (int o=0; o<SGU_OP_PER_CH; o++) {
-        DivInstrumentFM::Operator& op=chan[c.chan].state.fm.op[o];
-        op.sl=c.value>>4;
-        op.rr=c.value&15;
-        opWrite(c.chan,o,SGU_OP_REG_SL_RR,(op.sl<<SGU_OP3_SL_SHIFT)|(op.rr&SGU_OP3_RR_MASK));
-      }
       break;
     case DIV_CMD_SU_SWEEP_PERIOD_LOW: {
       switch (c.value) {
@@ -1753,49 +1385,47 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       chWrite(c.chan,SGU1_CHN_RESTIMER_H,chan[c.chan].syncTimer>>8);
       writeControlUpper(c.chan);
       break;
-    case DIV_CMD_SAMPLE_POS:
-      chan[c.chan].hasOffset=c.value;
-      chan[c.chan].keyOn=true;
+    case DIV_CMD_C64_FINE_CUTOFF:
+      chan[c.chan].baseCutoff=c.value*4;
+      if (!chan[c.chan].std.ex1.has) {
+        chan[c.chan].cutoff=chan[c.chan].baseCutoff;
+        chWrite(c.chan,SGU1_CHN_CUTOFF_L,chan[c.chan].cutoff&0xff);
+        chWrite(c.chan,SGU1_CHN_CUTOFF_H,chan[c.chan].cutoff>>8);
+      }
       break;
-    case DIV_CMD_C64_PW_SLIDE:
-      chan[c.chan].pw_slide=c.value*c.value2;
-      break;
-    case DIV_CMD_C64_CUTOFF_SLIDE:
-      chan[c.chan].cutoff_slide=c.value*c.value2;
+    // these will be used in ROM export.
+    // do NOT implement!
+    case DIV_CMD_HINT_VIBRATO: // (speed, depth)
+    case DIV_CMD_HINT_VIBRATO_RANGE: // (range)
+    case DIV_CMD_HINT_VIBRATO_SHAPE: // (shape)
+    case DIV_CMD_HINT_PITCH: // (pitch)
+    case DIV_CMD_HINT_ARPEGGIO: // (note1, note2)
+    case DIV_CMD_HINT_VOLUME: // (vol)
+    case DIV_CMD_HINT_VOL_SLIDE: // (amount, oneTick)
+    case DIV_CMD_HINT_PORTA: // (target, speed)
+    case DIV_CMD_HINT_LEGATO: // (note)
+    case DIV_CMD_HINT_VOL_SLIDE_TARGET: // (amount, target)
+    case DIV_CMD_HINT_TREMOLO: // (speed/depth as a byte)
+    case DIV_CMD_HINT_PANBRELLO: // (speed/depth as a byte)
+    case DIV_CMD_HINT_PAN_SLIDE: // (speed)
+    case DIV_CMD_HINT_PANNING: // (left, right)
       break;
     default:
+      logW("SGU-1: unhandled command %d",static_cast<int>(c.cmd));
       break;
   }
   return 1;
 }
 
 void DivPlatformSGU::forceIns() {
-  for (int i=0; i<8; i++) {
+  for (int i=0; i<SGU_CHNS; i++) {
     chan[i].insChanged=true;
     chan[i].freqChanged=true;
-
-    // restore channel attributes
-    chWrite(i,0x03,chan[i].pan);
-    writeControl(i);
-    writeControlUpper(i);
-    chWrite(i,0x08,chan[i].duty);
   }
-}
-
-void DivPlatformSGU::toggleRegisterDump(bool enable) {
-  DivDispatch::toggleRegisterDump(enable);
-}
-
-void* DivPlatformSGU::getChanState(int ch) {
-  return &chan[ch];
 }
 
 DivMacroInt* DivPlatformSGU::getChanMacroInt(int ch) {
   return &chan[ch].std;
-}
-
-unsigned short DivPlatformSGU::getPan(int ch) {
-  return parent->convertPanLinearToSplit(chan[ch].pan+127,8,255);
 }
 
 DivDispatchOscBuffer* DivPlatformSGU::getOscBuffer(int ch) {
@@ -1826,6 +1456,10 @@ void DivPlatformSGU::reset() {
     chan[i].pw_slide=0;
 
     chan[i].virtual_duty=0x800; // for some reason duty by default is 50%
+  }
+
+  for (int i=0; i<SGU_CHNS; i++) {
+    chWrite(i,SGU1_CHN_DUTY,0x3f);
   }
 
   oldOut[0]=0;
@@ -1866,13 +1500,6 @@ void DivPlatformSGU::notifyInsDeletion(void* ins) {
   }
 }
 
-int DivPlatformSGU::mapVelocity(int ch, float vel) {
-  const int volMax=MAX(1,dispatch(DivCommand(DIV_CMD_GET_VOLMAX,MAX(ch,0))));
-  double attenDb=20*log10(vel); // 20dB/decade for a linear mapping
-  double attenUnits=attenDb/0.75; // 0.75dB/unit
-  return MAX(0,volMax+attenUnits);
-}
-
 void DivPlatformSGU::poke(unsigned int addr, unsigned short val) {
   rWrite(addr,val);
 }
@@ -1892,74 +1519,10 @@ void DivPlatformSGU::setFlags(const DivConfig& flags) {
   }
 }
 
-const void* DivPlatformSGU::getSampleMem(int index) {
-  return (index==0)?chip.pcm:NULL;
-}
-
-size_t DivPlatformSGU::getSampleMemCapacity(int index) {
-  return (index==0)?SGU_PCM_RAM_SIZE:0;
-}
-
-size_t DivPlatformSGU::getSampleMemUsage(int index) {
-  return (index==0)?chip.pcm_size:0;
-}
-
-bool DivPlatformSGU::isSampleLoaded(int index, int sample) {
-  if (index!=0) return false;
-  if (sample<0 || sample>255) return false;
-  return sampleLoaded[sample];
-}
-
-const DivMemoryComposition* DivPlatformSGU::getMemCompo(int index) {
-  if (index!=0) return NULL;
-  return &memCompo;
-}
-
-void DivPlatformSGU::renderSamples(int sysID) {
-  memset(chip.pcm,0,SGU_PCM_RAM_SIZE);
-  memset(sampleOffSGU,0,256*sizeof(unsigned int));
-  memset(sampleLoaded,0,256*sizeof(bool));
-
-  memCompo=DivMemoryComposition();
-  memCompo.name="Sample RAM";
-
-  size_t memPos=0;
-  for (int i=0; i<parent->song.sampleLen; i++) {
-    DivSample* s=parent->song.sample[i];
-    if (s->data8==NULL) continue;
-    if (!s->renderOn[0][sysID]) {
-      sampleOffSGU[i]=0;
-      continue;
-    }
-
-    int paddedLen=s->length8;
-    if (memPos>=SGU_PCM_RAM_SIZE) {
-      logW("out of PCM memory for sample %d!",i);
-      break;
-    }
-    if (memPos+paddedLen>=SGU_PCM_RAM_SIZE) {
-      memcpy(chip.pcm+memPos,s->data8,SGU_PCM_RAM_SIZE-memPos);
-      logW("out of PCM memory for sample %d!",i);
-    } else {
-      memcpy(chip.pcm+memPos,s->data8,paddedLen);
-      sampleLoaded[i]=true;
-    }
-    sampleOffSGU[i]=memPos;
-    memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_SAMPLE,"Sample",i,memPos,memPos+paddedLen));
-    memPos+=paddedLen;
-  }
-  chip.pcm_size=memPos;
-  sysIDCache=sysID;
-
-  memCompo.used=memPos;
-  memCompo.capacity=SGU_PCM_RAM_SIZE;
-}
-
 int DivPlatformSGU::init(DivEngine* p, int channels, int sugRate, const DivConfig& flags) {
   parent=p;
   dumpWrites=false;
   skipRegisterWrites=false;
-  sysIDCache=0;
   for (int i=0; i<SGU_CHNS; i++) {
     isMuted[i]=false;
     oscBuf[i]=new DivDispatchOscBuffer;
@@ -1981,13 +1544,12 @@ bool DivPlatformSGU::hasSoftPan(int ch) {
   return true;
 }
 
-// initialization of sample tracking arrays
 DivPlatformSGU::DivPlatformSGU() {
-  sampleOffSGU=new unsigned int[256];
-  sampleLoaded=new bool[256];
+  sampleOffSU=new unsigned int[32768];
+  sampleLoaded=new bool[32768];
 }
 
 DivPlatformSGU::~DivPlatformSGU() {
-  delete[] sampleOffSGU;
+  delete[] sampleOffSU;
   delete[] sampleLoaded;
 }

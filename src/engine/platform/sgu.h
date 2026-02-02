@@ -18,11 +18,10 @@
  */
 
 #include "../dispatch.h"
-#include "../../fixedQueue.h"
 #include "sound/sgu.h"
 
 class DivPlatformSGU: public DivDispatch {
-  struct Channel: public SharedChannel<int> {
+  struct Channel: public SharedChannel<int8_t> {
     struct {
       DivInstrumentFM fm;
       DivInstrumentESFM esfm;
@@ -30,99 +29,31 @@ class DivPlatformSGU: public DivDispatch {
     int cutoff, baseCutoff, res, control, hasOffset, sample;
     signed char pan;
     unsigned char duty;
-    bool gate, noise, pcm, phaseReset, filterPhaseReset, switchRoles;
+    bool gate, pcm, phaseReset, filterPhaseReset;
     bool pcmLoop, timerSync, freqSweep, volSweep, cutSweep, released;
     unsigned short freqSweepP, volSweepP, cutSweepP;
     unsigned char freqSweepB, volSweepB, cutSweepB;
     unsigned char freqSweepV, volSweepV, cutSweepV;
     unsigned short syncTimer;
-    signed short wave;
     unsigned short hwSeqPos;
     short hwSeqDelay;
-    bool hardReset;
-    unsigned char globalPan;
-    int macroVolMul;
     short cutoff_slide;
     short pw_slide;
     short virtual_duty;
-    struct {
-      int baseNoteOverride;
-      bool fixedArp;
-      int arpOff;
-      int pitch2;
-      bool hasOpArp;
-      bool hasOpPitch;
-    } opsState[4];
-
-    void handleArpFmOp(int offset=0, int o=0) {
-      DivMacroInt::IntOp& m=this->std.op[o];
-      if (m.ssg.had) {
-        opsState[o].hasOpArp=true;
-
-        if (m.ssg.val<0) {
-          if (!(m.ssg.val&0x40000000)) {
-            opsState[o].baseNoteOverride=(m.ssg.val|0x40000000)+offset;
-            opsState[o].fixedArp=true;
-          } else {
-            opsState[o].arpOff=m.ssg.val;
-            opsState[o].fixedArp=false;
-          }
-        } else {
-          if (m.ssg.val&0x40000000) {
-            opsState[o].baseNoteOverride=(m.ssg.val&(~0x40000000))+offset;
-            opsState[o].fixedArp=true;
-          } else {
-            opsState[o].arpOff=m.ssg.val;
-            opsState[o].fixedArp=false;
-          }
-        }
-        freqChanged=true;
-      }
-
-      else
-      {
-        opsState[o].hasOpArp=false;
-      }
-    }
-
-    void handlePitchFmOp(int o)
-    {
-      DivMacroInt::IntOp& m=this->std.op[o];
-
-      if (m.dt.had) {
-        opsState[o].hasOpPitch=true;
-
-        if (m.dt.mode) {
-          opsState[o].pitch2+=m.dt.val;
-          CLAMP_VAR(opsState[o].pitch2,-32768,32767);
-        } else {
-          opsState[o].pitch2=m.dt.val;
-        }
-        this->freqChanged=true;
-      }
-
-      else
-      {
-        opsState[o].hasOpPitch=false;
-      }
-    }
-
     Channel():
-      SharedChannel<int>(0),
-      cutoff(0xffff),
-      baseCutoff(0xffff),
+      SharedChannel<int8_t>(0),
+      cutoff(0x3fff),
+      baseCutoff(0x3ffc),
       res(0),
       control(0),
       hasOffset(0),
       sample(-1),
       pan(0),
       duty(63),
-      gate(true),
-      noise(false),
+      gate(false),
       pcm(false),
       phaseReset(false),
       filterPhaseReset(false),
-      switchRoles(false),
       pcmLoop(false),
       timerSync(false),
       freqSweep(false),
@@ -139,16 +70,11 @@ class DivPlatformSGU: public DivDispatch {
       volSweepV(0),
       cutSweepV(0),
       syncTimer(0),
-      wave(0),
       hwSeqPos(0),
       hwSeqDelay(0),
-      hardReset(false),
-      globalPan(3),
-      macroVolMul(64),
       cutoff_slide(0),
       pw_slide(0),
       virtual_duty(0) {
-        memset(opsState, 0, sizeof(opsState));
       }
   };
   Channel chan[SGU_CHNS];
@@ -164,13 +90,9 @@ class DivPlatformSGU: public DivDispatch {
   FixedQueue<QueuedWrite,2048> writes;
   SGU chip;
   short oldOut[2];
-  bool isFast;
 
-  // Sample memory tracking (from SoundUnit)
-  unsigned int* sampleOffSGU;
+  unsigned int* sampleOffSU;
   bool* sampleLoaded;
-  int sysIDCache;
-  DivMemoryComposition memCompo;
 
   void writeControl(int ch);
   void writeControlUpper(int ch);
@@ -184,37 +106,26 @@ class DivPlatformSGU: public DivDispatch {
     void acquire(short** buf, size_t len);
     void acquireDirect(blip_buffer_t** bb, size_t len);
     int dispatch(DivCommand c);
-    void* getChanState(int chan);
-    DivMacroInt* getChanMacroInt(int ch);
-    unsigned short getPan(int ch);
-    DivDispatchOscBuffer* getOscBuffer(int chan);
-    unsigned char* getRegisterPool();
-    int getRegisterPoolSize();
-    int getOutputCount();
-    bool hasSoftPan(int ch);
-    void reset();
-    void forceIns();
     void tick(bool sysTick=true);
     void muteChannel(int ch, bool mute);
     bool keyOffAffectsArp(int ch);
     bool keyOffAffectsPorta(int ch);
     bool hasAcquireDirect();
-    bool getLegacyAlwaysSetVolume();
-    void toggleRegisterDump(bool enable);
-    void notifyInsChange(int ins);
-    void notifyInsDeletion(void* ins);
-    int mapVelocity(int ch, float vel);
+    bool hasSoftPan(int ch);
+    void reset();
+    void forceIns();
+    int getOutputCount();
     void setFlags(const DivConfig& flags);
-    void setFast(bool fast);
     void poke(unsigned int addr, unsigned short val);
     void poke(std::vector<DivRegWrite>& wlist);
     const char** getRegisterSheet();
-    const void* getSampleMem(int index);
-    size_t getSampleMemCapacity(int index);
-    size_t getSampleMemUsage(int index);
-    bool isSampleLoaded(int index, int sample);
-    const DivMemoryComposition* getMemCompo(int index);
-    void renderSamples(int sysID);
+    DivMacroInt* getChanMacroInt(int ch);
+    DivDispatchOscBuffer* getOscBuffer(int chan);
+    unsigned char* getRegisterPool();
+    int getRegisterPoolSize();
+    bool getLegacyAlwaysSetVolume();
+    void notifyInsChange(int ins);
+    void notifyInsDeletion(void* ins);
     int init(DivEngine* parent, int channels, int sugRate, const DivConfig& flags);
     void quit();
     DivPlatformSGU();
