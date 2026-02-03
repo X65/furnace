@@ -991,12 +991,15 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     case SGU_WAVE_PERIODIC_NOISE:
                     {
                         // Periodic noise: uses smaller 6-bit LFSR with configurable taps (su.c style)
-                        // Clock on phase bit 27 rising edges (SID-compatible, same as WAVE_NOISE)
-                        // Frequency scaling uses operator multiplier (reg 0 bits 0:3)
-                        // Count transitions to avoid aliasing at high frequencies
-                        uint32_t transitions = ((ch_state->phase[op] >> 28) - (ch_state->prev_phase[op] >> 28)) & 0xF;
                         // WPAR[1:0] selects LFSR tap configuration (per-operator timbre control)
-                        uint8_t tap_sel = SGU_OP5_WPAR(op_data[5]) & 3;
+                        uint8_t tap_sel = wpar & 3;
+
+                        // SU-compatible frequency scaling: detect transitions at higher bit rates
+                        // Base rate uses bit 29, then scale by tap:
+                        // tap 0: bit 29, tap 1: bit 28, tap 2: bit 27, tap 3: bit 26
+                        // This gives approximately 4x frequency increase per tap step
+                        uint8_t shift = 29 - tap_sel;
+                        uint32_t transitions = ((ch_state->phase[op] >> shift) - (ch_state->prev_phase[op] >> shift)) & 0xF;
                         // Mask to 6 bits to prevent pollution from upper bits of 32-bit storage
                         uint32_t lfsr = ch_state->noise_lfsr[op] & 0x3F;
                         while (transitions--)

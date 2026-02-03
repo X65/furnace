@@ -375,7 +375,7 @@ extern "C" {
 // - WAVE_NOISE: 32-bit LFSR white noise, SID-compatible clocking (freq16 * 0.9537 Hz)
 // - WAVE_PERIODIC_NOISE: 6-bit LFSR metallic/tonal noise
 //     Frequency: channel freq16 × operator multiplier (R0[3:0])
-//     Timbre: channel duty[5:4] selects LFSR tap configuration:
+//     Timbre: WPAR[1:0] selects LFSR tap configuration (per-operator):
 //       0: taps 3,4     (~31 states)
 //       1: taps 2,3     (~31 states)
 //       2: taps 0,2,3   (different timbre)

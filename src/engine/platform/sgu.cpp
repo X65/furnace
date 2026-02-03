@@ -242,6 +242,11 @@ void DivPlatformSGU::tick(bool sysTick) {
           ins->type==DIV_INS_C64 || ins->type==DIV_INS_SID2) {
         unsigned char wave=suToSguWaveformMap[chan[i].std.wave.val&7];
         chan[i].state.fm.op[3].ws=wave;
+        // For SU PERIODIC_NOISE, copy duty[5:4] tap selection to WPAR[1:0]
+        if (wave==SGU_WAVE_PERIODIC_NOISE) {
+          unsigned char suMode=(chan[i].duty>>4)&3;
+          chan[i].wpar[3]=suMode;
+        }
         applyOpRegs(i, 3, chan[i].state.fm.op[3], chan[i].state.esfm.op[3]);
       }
     }
@@ -603,7 +608,7 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
   const unsigned char sr = op.d2r & 0x1f; // 5-bit SR/D2R
   const unsigned char delay = opE.delay & 0x07; // 3-bit DELAY
   const unsigned char ksr = op.rs & 0x03;  // 2-bit KSR
-  const unsigned char wpar = 0; // WPAR not yet exposed via Furnace macros
+  const unsigned char wpar = chan[ch].wpar[o] & 0x07; // 3-bit WPAR
   const unsigned char dam = op.dam & 0x01;  // 1-bit TRMD
   const unsigned char dvb = op.dvb & 0x01;  // 1-bit VIBD
   const unsigned char sync = 0; // SYNC not yet exposed via Furnace macros
@@ -664,7 +669,7 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
   opWrite(ch, o, 0x07, reg7);
 
   return;
-  logD("SGU op ch=%d op=%d regs: %02X %02X %02X %02X %02X %02X %02X %02X",
+  logD("SGU op ch=%d op=%d regs: %02X %02X %02X %02X %02X %02X %02X %02X (wave=%d op.ws=%d)",
     ch,
     o,
     static_cast<unsigned int>(reg0),
@@ -674,7 +679,9 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
     static_cast<unsigned int>(reg4),
     static_cast<unsigned int>(reg5),
     static_cast<unsigned int>(reg6),
-    static_cast<unsigned int>(reg7));
+    static_cast<unsigned int>(reg7),
+    static_cast<unsigned int>(wave),
+    static_cast<unsigned int>(op.ws));
 
   logD("SGU op ch=%d op=%d dec: TRM=%u VIB=%u FIX=%u MUL=%u KSL=%u TL=%u AR=%u DR=%u SL=%u RR=%u DT=%u SR=%u DELAY=%u KSR=%u WPAR=%u TRMD=%u VIBD=%u SYNC=%u RING=%u MOD=%u OUT=%u WAVE=%u",
     ch,
@@ -1258,6 +1265,11 @@ int DivPlatformSGU::dispatch(DivCommand c) {
           // Single-oscillator instruments: set waveform on output operator (op3)
           unsigned char wave=suToSguWaveformMap[c.value&7];
           chan[c.chan].state.fm.op[3].ws=wave;
+          // For SU PERIODIC_NOISE, copy duty[5:4] tap selection to WPAR[1:0]
+          if (wave==SGU_WAVE_PERIODIC_NOISE) {
+            unsigned char suMode=(chan[c.chan].duty>>4)&3;
+            chan[c.chan].wpar[3]=suMode;
+          }
           applyOpRegs(c.chan, 3, chan[c.chan].state.fm.op[3], chan[c.chan].state.esfm.op[3]);
           break;
         }

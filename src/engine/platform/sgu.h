@@ -29,6 +29,7 @@ class DivPlatformSGU: public DivDispatch {
     int cutoff, baseCutoff, res, control, hasOffset, sample;
     signed char pan;
     unsigned char duty;
+    unsigned char wpar[SGU_OP_PER_CH];
     bool gate, pcm, phaseReset, filterPhaseReset;
     bool pcmLoop, timerSync, freqSweep, volSweep, cutSweep, released;
     unsigned short freqSweepP, volSweepP, cutSweepP;
@@ -75,6 +76,7 @@ class DivPlatformSGU: public DivDispatch {
       cutoff_slide(0),
       pw_slide(0),
       virtual_duty(0) {
+        for (int i=0; i<SGU_OP_PER_CH; i++) wpar[i]=0;
       }
   };
   Channel chan[SGU_CHNS];
