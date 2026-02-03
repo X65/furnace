@@ -508,6 +508,7 @@ static void fm_channel_reset(struct sgu_ch_state *self, size_t ch_idx)
         self->eg_delay_run[op] = false;
         self->eg_delay_counter[op] = 0;
         self->phase_wrap[op] = false;
+        self->lfsr_step[op] = 0;
         // initialize per-operator noise LFSR with unique seed per channel/operator
         self->noise_lfsr[op] = 0x1FFFFF ^ ((uint32_t)(ch_idx * SGU_OP_PER_CH + op) << 8);
 #if SGU_EG_DEBUG
@@ -990,55 +991,51 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     break;
                     case SGU_WAVE_PERIODIC_NOISE:
                     {
-                        // Periodic noise: bitmap LFSR selection with phase gating
-                        // WPAR[3:0] enables LFSR stages, shorter LFSRs gate longer ones
+                        // Periodic noise: POKEY-style free-running LFSRs with sample-and-hold
+                        // WPAR[3:0] enables LFSR stages, longer LFSRs XOR-gate the shortest
                         uint32_t phase = ch_state->phase[op];
                         const uint32_t prev_phase = ch_state->prev_phase[op];
-                        const uint32_t phase_delta = phase - prev_phase;
 
-                        uint8_t gate = 0;
-                        uint8_t bit = 0;
+                        // Detect phase wrap (MSB transition 1→0 indicates full cycle)
+                        bool phase_wrapped = (prev_phase & 0x80000000) && !(phase & 0x80000000);
+
+                        // All LFSRs free-run: always advance step on phase wrap
+                        if (phase_wrapped) {
+                            ch_state->lfsr_step[op]++;
+                        }
+
+                        uint8_t lfsr_sel = wpar & 0x0F;
+                        if (!lfsr_sel)
+                            break;
 
                         const uint8_t *tables[4] = {sgu->lfsr_4bit, sgu->lfsr_5bit, sgu->lfsr_6bit, sgu->lfsr_9bit};
                         const uint32_t periods[4] = {15, 31, 63, 511};
-                        const uint8_t *gating = NULL;
-                        uint8_t gating_period = 0;
-                        const uint8_t *outing = NULL;
-                        uint8_t outing_period = 0;
 
-                        // Iterate from longest (bit 3) to shortest (bit 0)
-                        uint8_t lfsr_sel = wpar & 0x0F;
-                        for (int i = 3; i >= 0; i--)
-                        {
+                        // Find output LFSR (shortest) and compute XOR gate from longer ones
+                        int out_idx = -1;
+                        uint8_t gate = 0;
+                        uint32_t step = ch_state->lfsr_step[op];
+
+                        for (int i = 0; i < 4; i++) {
                             if (!(lfsr_sel & (1 << i)))
                                 continue;
 
-                            if (gating) {
-                                gate ^= gating[((uint64_t)phase * gating_period) >> 32];
+                            if (out_idx < 0) {
+                                out_idx = i;  // shortest selected = output
+                            } else {
+                                // Longer LFSRs XOR into gate
+                                gate ^= tables[i][step % periods[i]];
                             }
-                            if (outing) {
-                                gating = outing;
-                                gating_period = outing_period;
-                            }
-                            outing = tables[i];
-                            outing_period = periods[i];
                         }
 
-                        if (outing) {
-                            if (gating) {
-                                // Include the final gating LFSR in gate calculation
-                                gate ^= gating[((uint64_t)phase * gating_period) >> 32];
-
-                                if (gate)
-                                    ch_state->gated_phase[op] += phase_delta;
-                                phase = ch_state->gated_phase[op];
-                            }
-
-                            uint32_t pos = ((uint64_t)(phase) * outing_period) >> 32;
-                            bit = outing[pos];
-                            sample = bit ? 32767 : -32768;
+                        // Sample-and-hold: update output only when gate=1 (or no gating)
+                        bool has_gating = (lfsr_sel & ~((1 << (out_idx + 1)) - 1)) != 0;
+                        if (!has_gating || gate) {
+                            uint8_t bit = tables[out_idx][step % periods[out_idx]];
+                            ch_state->noise_out[op] = bit ? 32767 : -32768;
                         }
-
+                        // Output held value
+                        sample = ch_state->noise_out[op];
                     }
                     break;
                     }
@@ -1341,6 +1338,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
             {
                 ch_state->phase[op] = 0;
                 ch_state->prev_phase[op] = 0;
+                ch_state->lfsr_step[op] = 0;
             }
             sgu->phase_reset_countdown[ch] = sgu->chan[ch].restimer; // preload timer sync counter
             sgu->chan[ch].flags1 &= ~SGU1_FLAGS1_PHASE_RESET;        // clear request
@@ -1364,6 +1362,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                 {
                     ch_state->phase[op] = 0;
                     ch_state->noise_lfsr[op] = 0x1FFFFF; // reset noise seed
+                    ch_state->lfsr_step[op] = 0;
                 }
             }
         }
@@ -1452,13 +1451,13 @@ void SGU_Init(struct SGU *sgu, size_t sampleMemSize)
             lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
         }
     }
-    // 9-bit LFSR: taps 4,8 (period 511) - POKEY POLY9
+    // 9-bit LFSR: taps 3,8 (period 511) - POKEY POLY9
     {
         uint32_t lfsr = 0x1FF;
         for (int i = 0; i < 511; i++)
         {
             sgu->lfsr_9bit[i] = lfsr & 1;
-            uint32_t c = ((lfsr >> 4) ^ (lfsr >> 8)) & 1;
+            uint32_t c = ((lfsr >> 3) ^ (lfsr >> 8)) & 1;
             lfsr = ((lfsr >> 1) | (c << 8)) & 0x1FF;
         }
     }

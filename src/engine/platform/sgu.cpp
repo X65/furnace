@@ -124,34 +124,23 @@ static const unsigned char suToSguWaveformMap[8]={
   /* 7: XOR_TRIANGLE   -> */ SGU_WAVE_TRIANGLE,
 };
 
-// POKEY waveform to SGU waveform mapping
-static const unsigned char pokeyToSguWave[8]={
-  /* 0: Harsh Noise (POLY5+17) -> */ SGU_WAVE_PERIODIC_NOISE,
-  /* 1: Square Buzz (POLY5)    -> */ SGU_WAVE_PERIODIC_NOISE,
-  /* 2: Weird Noise (POLY4+5)  -> */ SGU_WAVE_PERIODIC_NOISE,
-  /* 3: Square Buzz (POLY5)    -> */ SGU_WAVE_PERIODIC_NOISE,
-  /* 4: Soft Noise (POLY17)    -> */ SGU_WAVE_PERIODIC_NOISE,
-  /* 5: Square                 -> */ SGU_WAVE_PULSE,
-  /* 6: Bass (POLY4)           -> */ SGU_WAVE_PERIODIC_NOISE,
-  /* 7: Buzz (POLY4)           -> */ SGU_WAVE_PERIODIC_NOISE,
-};
-
 // POKEY waveform to SGU WPAR mapping
+// WPAR=0 means "no poly" (pure tone) - driver uses PULSE wave instead
 // WPAR[3:0] bitmap enables LFSR stages for PERIODIC_NOISE:
 //   bit 0: 4-bit (15 states) - POKEY POLY4
 //   bit 1: 5-bit (31 states) - POKEY POLY5
-//   bit 2: 6-bit (63 states)
+//   bit 2: 6-bit (63 states) - SU original
 //   bit 3: 9-bit (511 states) - approximates POKEY POLY9/17
-// Multiple bits: shorter LFSRs gate longer ones (POKEY-style)
+// Multiple bits: longer gates shorter (sample-and-hold)
 static const unsigned char pokeyToSguWpar[8]={
-  SGU_LFSR_5BIT | SGU_LFSR_9BIT,  // 0: Harsh Noise - POLY5+17 classic
-  SGU_LFSR_5BIT,                  // 1: Square Buzz - pure POLY5
-  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 2: Weird Noise - POLY4+5 classic
-  SGU_LFSR_5BIT | SGU_LFSR_6BIT,  // 3: Square Buzz 2 - buzz with 6-bit variation
-  SGU_LFSR_9BIT,                  // 4: Soft Noise - POLY9/17
-  0,                              // 5: Square (PULSE waveform)
-  SGU_LFSR_4BIT,                  // 6: Bass - tight metallic
-  SGU_LFSR_4BIT | SGU_LFSR_6BIT,  // 7: Buzz - metallic with 6-bit gating
+  SGU_LFSR_5BIT | SGU_LFSR_9BIT,  // 0 $00: 5-bit then 17-bit polys -> 9-bit gates 5-bit
+  SGU_LFSR_5BIT,                  // 1 $20: 5-bit poly only
+  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 2 $40: 5-bit then 4-bit polys  -> 5-bit gates 4-bit
+  SGU_LFSR_5BIT,                  // 3 $60: 5-bit poly only
+  SGU_LFSR_9BIT,                  // 4 $80: 17-bit poly only        -> 9-bit only
+  0,                              // 5 $A0: no poly (pure tone)
+  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 6 $C0: 5-bit then 4-bit polys  -> 5-bit gates 4-bit
+  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 7 $E0: same as 6 (per waveMap in pokey.cpp)
 };
 
 void DivPlatformSGU::acquire(short** buf, size_t len) {
@@ -275,24 +264,25 @@ void DivPlatformSGU::tick(bool sysTick) {
       // For SU/single-oscillator instruments, set waveform on output operator (op3)
       DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
       if (ins->type==DIV_INS_POKEY) {
-        // POKEY uses polynomial noise - map to SGU 6-bit LFSR modes
-        // WPAR[1:0] selects tap configuration (0-3)
+        // POKEY uses polynomial noise - map to SGU LFSR modes
         unsigned char waveIdx=chan[i].std.wave.val&7;
-        chan[i].state.fm.op[3].ws=pokeyToSguWave[waveIdx];
         chan[i].wpar[3]=pokeyToSguWpar[waveIdx];
-        // For PULSE (square wave), set 50% duty cycle
-        if (pokeyToSguWave[waveIdx]==SGU_WAVE_PULSE) {
+        // WPAR=0 means "no poly" (pure tone) - use PULSE with 50% duty
+        if (chan[i].wpar[3]==0) {
+          chan[i].state.fm.op[3].ws=SGU_WAVE_PULSE;
           chan[i].duty=0x3F;
           chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+        } else {
+          chan[i].state.fm.op[3].ws=SGU_WAVE_PERIODIC_NOISE;
         }
         applyOpRegs(i, 3, chan[i].state.fm.op[3], chan[i].state.esfm.op[3]);
       } else if (ins->type==DIV_INS_SU ||
           ins->type==DIV_INS_C64 || ins->type==DIV_INS_SID2) {
         unsigned char wave=suToSguWaveformMap[chan[i].std.wave.val&7];
         chan[i].state.fm.op[3].ws=wave;
-        // For SU PERIODIC_NOISE, copy duty[7:4] to WPAR[3:0] (LFSR bitmap)
+        // For SU PERIODIC_NOISE, copy duty[3:0] tap selection to WPAR[3:0]
         if (wave==SGU_WAVE_PERIODIC_NOISE) {
-          unsigned char suMode=(chan[i].duty>>4)&0x0F;
+          unsigned char suMode=(chan[i].duty>>3)&0x0F;
           chan[i].wpar[3]=suMode;
         }
         applyOpRegs(i, 3, chan[i].state.fm.op[3], chan[i].state.esfm.op[3]);
@@ -424,10 +414,26 @@ void DivPlatformSGU::tick(bool sysTick) {
 
     // Frequency update
     if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
-      //DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
+      DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
       chan[i].freq=parent->calcFreq(chan[i].baseFreq, chan[i].pitch,
           chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,
           chan[i].fixedArp, false, 2, chan[i].pitch2, chipClock, CHIP_FREQBASE);
+
+      // POKEY frequency compensation - match POKEY's poly counter period effects
+      // POKEY divides freq by different amounts based on wave mode:
+      // - Default: /4, WAVE=6: /10 (2.5x higher pitch), WAVE=7: /30 (7.5x higher pitch)
+      // SGU uses direct frequency, so multiply to match POKEY's pitch ratios
+      if (ins->type==DIV_INS_POKEY) {
+        unsigned char waveIdx=chan[i].std.wave.val&7;
+        switch (waveIdx) {
+          case 6:
+            chan[i].freq=chan[i].freq*5/2;  // 2.5x for POLY5|POLY4
+            break;
+          case 7:
+            chan[i].freq=chan[i].freq*15/2;  // 7.5x for pure tone (POKEY quirk)
+            break;
+        }
+      }
 
       if (chan[i].pcm) {
         DivSample* sample=parent->getSample(chan[i].sample);
@@ -1322,15 +1328,16 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     case DIV_CMD_WAVE:
       switch (ins->type) {
         case DIV_INS_POKEY: {
-          // POKEY uses polynomial noise - map to SGU 6-bit LFSR modes
-          // WPAR[1:0] selects tap configuration (0-3)
+          // POKEY uses polynomial noise - map to SGU LFSR modes
           unsigned char waveIdx=c.value&7;
-          chan[c.chan].state.fm.op[3].ws=pokeyToSguWave[waveIdx];
           chan[c.chan].wpar[3]=pokeyToSguWpar[waveIdx];
-          // For PULSE (square wave), set 50% duty cycle
-          if (pokeyToSguWave[waveIdx]==SGU_WAVE_PULSE) {
+          // WPAR=0 means "no poly" (pure tone) - use PULSE with 50% duty
+          if (chan[c.chan].wpar[3]==0) {
+            chan[c.chan].state.fm.op[3].ws=SGU_WAVE_PULSE;
             chan[c.chan].duty=0x3F;
             chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
+          } else {
+            chan[c.chan].state.fm.op[3].ws=SGU_WAVE_PERIODIC_NOISE;
           }
           applyOpRegs(c.chan, 3, chan[c.chan].state.fm.op[3], chan[c.chan].state.esfm.op[3]);
           break;
@@ -1341,9 +1348,9 @@ int DivPlatformSGU::dispatch(DivCommand c) {
           // Single-oscillator instruments: set waveform on output operator (op3)
           unsigned char wave=suToSguWaveformMap[c.value&7];
           chan[c.chan].state.fm.op[3].ws=wave;
-          // For SU PERIODIC_NOISE, copy duty[7:4] to WPAR[3:0] (LFSR bitmap)
+          // For SU PERIODIC_NOISE, copy duty[3:0] tap selection to WPAR[3:0]
           if (wave==SGU_WAVE_PERIODIC_NOISE) {
-            unsigned char suMode=(chan[c.chan].duty>>4)&0x0F;
+            unsigned char suMode=(chan[c.chan].duty>>3)&0x0F;
             chan[c.chan].wpar[3]=suMode;
           }
           applyOpRegs(c.chan, 3, chan[c.chan].state.fm.op[3], chan[c.chan].state.esfm.op[3]);

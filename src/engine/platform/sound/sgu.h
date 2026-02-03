@@ -563,6 +563,7 @@ struct SGU
         uint32_t noise_lfsr[SGU_OP_PER_CH];                // per-operator noise LFSR state
         int16_t noise_out[SGU_OP_PER_CH];                  // per-operator noise S&H output
         uint32_t gated_phase[SGU_OP_PER_CH];               // gated phase for chained LFSR
+        uint32_t lfsr_step[SGU_OP_PER_CH];                 // discrete LFSR step counter for PERIODIC_NOISE
         bool phase_wrap[SGU_OP_PER_CH];                    // phase wrap flag for current sample (for SYNC)
         bool key_state[SGU_OP_PER_CH];                     // current key state: on or off
         bool keyon_live[SGU_OP_PER_CH];                    // live key on state
@@ -583,7 +584,7 @@ struct SGU
     uint8_t lfsr_4bit[15];    // 4-bit LFSR (taps 2,3) - POKEY POLY4
     uint8_t lfsr_5bit[31];    // 5-bit LFSR (taps 2,4) - POKEY POLY5
     uint8_t lfsr_6bit[63];    // 6-bit LFSR (taps 4,5) - SU like
-    uint8_t lfsr_9bit[511];   // 9-bit LFSR (taps 4,8) - POKEY POLY9
+    uint8_t lfsr_9bit[511];   // 9-bit LFSR (taps 3,8) - POKEY POLY9
 
     // src[i] = raw oscillator sample for channel i (16-bit, used for ring mod).
     // post[i] = processed sample after volume/filter (higher precision int32).
