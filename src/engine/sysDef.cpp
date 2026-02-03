@@ -2268,7 +2268,7 @@ void DivEngine::registerSystems() {
       return DivChanDef(
         fmt::sprintf(_("Channel %d"),ch+1),
         fmt::sprintf(_("CH%d"),ch+1),
-        DIV_CH_FM,
+        DIV_CH_NOISE,
         {
           DIV_INS_ESFM,
           DIV_INS_AMIGA,
