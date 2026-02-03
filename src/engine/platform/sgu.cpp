@@ -33,12 +33,12 @@ static constexpr int SGU_CH_BASE = SGU_OP_PER_CH * SGU_OP_REGS;
 #define CHIP_FREQBASE 524288
 
 static const char* regCheatSheetSGU[]={
-  "CHx_OPy_R0 [7 TRM][6 VIB][5 FIX][3:0 MUL]", "00+x*40+y*08",
+  "CHx_OPy_R0 [7 TRM][6 VIB][5:4 KSR][3:0 MUL]", "00+x*40+y*08",
   "CHx_OPy_R1 [7:6 KSL][5:0 TL]", "01+x*40+y*08",
   "CHx_OPy_R2 [7:4 AR][3:0 DR]", "02+x*40+y*08",
   "CHx_OPy_R3 [7:4 SL][3:0 RR]", "03+x*40+y*08",
   "CHx_OPy_R4 [7:5 DT][4:0 SR]", "04+x*40+y*08",
-  "CHx_OPy_R5 [7:5 DELAY][4:3 KSR][2:0 WPAR]", "05+x*40+y*08",
+  "CHx_OPy_R5 [7:5 DELAY][4 FIX][3:0 WPAR]", "05+x*40+y*08",
   "CHx_OPy_R6 [7 TRMD][6 VIBD][5 SYNC][4 RING][3:1 MOD][0 TLmsb]", "06+x*40+y*08",
   "CHx_OPy_R7 [7:5 OUT][4 ARmsb][3 DRmsb][2:0 WAVE]", "07+x*40+y*08",
 
@@ -656,7 +656,7 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
   const unsigned char sr = op.d2r & 0x1f; // 5-bit SR/D2R
   const unsigned char delay = opE.delay & 0x07; // 3-bit DELAY
   const unsigned char ksr = op.rs & 0x03;  // 2-bit KSR
-  const unsigned char wpar = chan[ch].wpar[o] & 0x07; // 3-bit WPAR
+  const unsigned char wpar = chan[ch].wpar[o] & 0x0F; // 4-bit WPAR bitmap
   const unsigned char dam = op.dam & 0x01;  // 1-bit TRMD
   const unsigned char dvb = op.dvb & 0x01;  // 1-bit VIBD
   const unsigned char sync = 0; // SYNC not yet exposed via Furnace macros
@@ -666,10 +666,10 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
   const unsigned char wave = op.ws & 0x07;    // 3-bit WAVE Shape
 
 
-  // R0: [7]TRM [6]VIB [5]FIX [4]--- [3:0]MULT
+  // R0: [7]TRM [6]VIB [5:4]KSR [3:0]MULT
   const unsigned char reg0 = (am ? SGU_OP0_TRM_BIT : 0)
     | (fm ? SGU_OP0_VIB_BIT : 0)
-    | (fix ? SGU_OP0_FIX_BIT : 0)
+    | ((ksr << SGU_OP0_KSR_SHIFT) & SGU_OP0_KSR_MASK)
     | (mult & SGU_OP0_MUL_MASK);
 
   // R1: [7:6]KSL [5:0]TL_lo6
@@ -688,9 +688,9 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
   const unsigned char reg4 = ((dt << SGU_OP4_DT_SHIFT) & SGU_OP4_DT_MASK)
     | (sr & SGU_OP4_SR_MASK);
 
-  // R5: [7:5]DELAY [4:3]KSR [2:0]WPAR
+  // R5: [7:5]DELAY [4]FIX [3:0]WPAR
   const unsigned char reg5 = ((delay << SGU_OP5_DELAY_SHIFT) & SGU_OP5_DELAY_MASK)
-    | ((ksr << SGU_OP5_KSR_SHIFT) & SGU_OP5_KSR_MASK)
+    | (fix ? SGU_OP5_FIX_BIT : 0)
     | (wpar & SGU_OP5_WPAR_MASK);
 
   // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
@@ -736,7 +736,7 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
     o,
     (SGU_OP0_TRM(reg0) != 0),
     (SGU_OP0_VIB(reg0) != 0),
-    (SGU_OP0_FIX(reg0) != 0),
+    (SGU_OP5_FIX(reg5) != 0),
     static_cast<unsigned int>(SGU_OP0_MUL(reg0)),
     static_cast<unsigned int>(SGU_OP1_KSL(reg1)),
     static_cast<unsigned int>(SGU_OP16_TL(reg1, reg6)),
@@ -747,7 +747,7 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
     static_cast<unsigned int>(SGU_OP4_DT(reg4)),
     static_cast<unsigned int>(SGU_OP4_SR(reg4)),
     static_cast<unsigned int>(SGU_OP5_DELAY(reg5)),
-    static_cast<unsigned int>(SGU_OP5_KSR(reg5)),
+    static_cast<unsigned int>(SGU_OP0_KSR(reg0)),
     static_cast<unsigned int>(SGU_OP5_WPAR(reg5)),
     (SGU_OP6_TRMD(reg6) != 0),
     (SGU_OP6_VIBD(reg6) != 0),

@@ -213,15 +213,16 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 // Operator bitfields
 // -----------------------------------------------------------------------------
 
-// R0: [7]TRM [6]VIB [5]FIX [4]--- [3:0]MUL
-#define SGU_OP0_MUL_MASK 0x0F
-#define SGU_OP0_FIX_BIT  0x20
-#define SGU_OP0_VIB_BIT  0x40
-#define SGU_OP0_TRM_BIT  0x80
+// R0: [7]TRM [6]VIB [5:4]KSR [3:0]MUL
+#define SGU_OP0_MUL_MASK  0x0F
+#define SGU_OP0_KSR_MASK  0x30
+#define SGU_OP0_KSR_SHIFT 4
+#define SGU_OP0_VIB_BIT   0x40
+#define SGU_OP0_TRM_BIT   0x80
 
 #define SGU_OP0_TRM(reg) ((reg) & SGU_OP0_TRM_BIT)
 #define SGU_OP0_VIB(reg) ((reg) & SGU_OP0_VIB_BIT)
-#define SGU_OP0_FIX(reg) ((reg) & SGU_OP0_FIX_BIT)
+#define SGU_OP0_KSR(reg) (((reg) & SGU_OP0_KSR_MASK) >> SGU_OP0_KSR_SHIFT)
 #define SGU_OP0_MUL(reg) ((reg) & SGU_OP0_MUL_MASK)
 
 // R1: [7:6]KSL [5:0]TL_lo6
@@ -256,19 +257,18 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 #define SGU_OP4_DT_MASK  0xE0
 #define SGU_OP4_DT_SHIFT 5
 
-#define SGU_OP4_SR(reg) ((reg) & SGU_OP4_SR_MASK)
 #define SGU_OP4_DT(reg) (((reg) & SGU_OP4_DT_MASK) >> SGU_OP4_DT_SHIFT)
+#define SGU_OP4_SR(reg) ((reg) & SGU_OP4_SR_MASK)
 
-// R5: [7:5]DELAY [4:3]KSR [2:0]WPAR
-#define SGU_OP5_WPAR_MASK   0x07
-#define SGU_OP5_KSR_MASK    0x18
-#define SGU_OP5_KSR_SHIFT   3
+// R5: [7:5]DELAY [4]FIX [3:0]WPAR
+#define SGU_OP5_WPAR_MASK   0x0F
+#define SGU_OP5_FIX_BIT     0x10
 #define SGU_OP5_DELAY_MASK  0xE0
 #define SGU_OP5_DELAY_SHIFT 5
 
-#define SGU_OP5_WPAR(reg)  ((reg) & SGU_OP5_WPAR_MASK)
 #define SGU_OP5_DELAY(reg) (((reg) & SGU_OP5_DELAY_MASK) >> SGU_OP5_DELAY_SHIFT)
-#define SGU_OP5_KSR(reg)   (((reg) & SGU_OP5_KSR_MASK) >> SGU_OP5_KSR_SHIFT)
+#define SGU_OP5_FIX(reg)   ((reg) & SGU_OP5_FIX_BIT)
+#define SGU_OP5_WPAR(reg)  ((reg) & SGU_OP5_WPAR_MASK)
 
 // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
 #define SGU_OP6_TL_MSB_BIT 0x01

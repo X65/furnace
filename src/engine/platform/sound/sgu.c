@@ -366,7 +366,7 @@ static inline uint8_t compute_eg_rate(uint8_t op_data[], uint16_t ch_freq, enum 
 {
     // OPM-style 5-bit keycode (block + top 2 frac bits)
     uint32_t keycode = keycode_from_freq16_32(ch_freq);
-    uint32_t ksrval = keycode >> (SGU_OP5_KSR(op_data[5]) ^ 3);
+    uint32_t ksrval = keycode >> (SGU_OP0_KSR(op_data[0]) ^ 3);
     uint32_t rawrate;
     switch (state)
     {
@@ -399,7 +399,7 @@ static void eg_debug_params(struct SGU *sgu, uint8_t ch, uint8_t op, uint8_t op_
     if (ch != 0 || op != 0)
         return;
     uint32_t keycode = keycode_from_freq16_32(ch_freq);
-    uint32_t ksrval = keycode >> (SGU_OP5_KSR(op_data[5]) ^ 3);
+    uint32_t ksrval = keycode >> (SGU_OP0_KSR(op_data[0]) ^ 3);
     uint32_t ar = SGU_OP27_AR(op_data[2], op_data[7]);
     uint32_t dr = SGU_OP27_DR(op_data[2], op_data[7]);
     uint32_t sl = SGU_OP3_SL(op_data[3]);
@@ -594,7 +594,7 @@ static inline void clock_phase(struct sgu_ch_state *self, uint8_t op, uint8_t op
     uint32_t phase_step;
     const uint8_t base = SGU_OP0_MUL(op_data[0]);
     const uint8_t scale = SGU_OP4_DT(op_data[4]);
-    if (SGU_OP0_FIX(op_data[0]))
+    if (SGU_OP5_FIX(op_data[5]))
     {
         // fixed frequency mode: 8..32640
         uint16_t freq16 = (uint16_t)((8 + (base * 247 + 7) / 15) << scale);
