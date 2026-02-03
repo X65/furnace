@@ -383,7 +383,7 @@ void DivPlatformSGU::tick(bool sysTick) {
           if (sample->centerRate<1) {
             off=0.25;
           } else {
-            off=(double)sample->centerRate/(parent->getCenterRate()*4.0);
+            off=(double)sample->centerRate/(parent->getCenterRate()*(4.0/6.0));
           }
           chan[i].freq=(double)chan[i].freq*off;
         }
@@ -1585,6 +1585,68 @@ void DivPlatformSGU::notifyInsDeletion(void* ins) {
   }
 }
 
+const void* DivPlatformSGU::getSampleMem(int index) {
+  return (index==0)?chip.pcm:NULL;
+}
+
+size_t DivPlatformSGU::getSampleMemCapacity(int index) {
+  return (index==0)?SGU_PCM_RAM_SIZE:0;
+}
+
+size_t DivPlatformSGU::getSampleMemUsage(int index) {
+  return (index==0)?memCompo.used:0;
+}
+
+bool DivPlatformSGU::isSampleLoaded(int index, int sample) {
+  if (index!=0) return false;
+  if (sample<0 || sample>32767) return false;
+  return sampleLoaded[sample];
+}
+
+const DivMemoryComposition* DivPlatformSGU::getMemCompo(int index) {
+  if (index!=0) return NULL;
+  return &memCompo;
+}
+
+void DivPlatformSGU::renderSamples(int sysID) {
+  memset(chip.pcm,0,SGU_PCM_RAM_SIZE);
+  memset(sampleOffSU,0,32768*sizeof(unsigned int));
+  memset(sampleLoaded,0,32768*sizeof(bool));
+
+  memCompo=DivMemoryComposition();
+  memCompo.name="Sample RAM";
+
+  size_t memPos=0;
+  for (int i=0; i<parent->song.sampleLen; i++) {
+    DivSample* s=parent->song.sample[i];
+    if (s->data8==NULL) continue;
+    if (!s->renderOn[0][sysID]) {
+      sampleOffSU[i]=0;
+      continue;
+    }
+
+    int paddedLen=s->length8;
+    if (memPos>=getSampleMemCapacity(0)) {
+      logW("out of PCM memory for sample %d!",i);
+      break;
+    }
+    if (memPos+paddedLen>=getSampleMemCapacity(0)) {
+      memcpy(chip.pcm+memPos,s->data8,getSampleMemCapacity(0)-memPos);
+      logW("out of PCM memory for sample %d!",i);
+    } else {
+      memcpy(chip.pcm+memPos,s->data8,paddedLen);
+      sampleLoaded[i]=true;
+    }
+    sampleOffSU[i]=memPos;
+    memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_SAMPLE,"Sample",i,memPos,memPos+paddedLen));
+    memPos+=paddedLen;
+  }
+  sysIDCache=sysID;
+
+  memCompo.used=memPos;
+  memCompo.capacity=SGU_PCM_RAM_SIZE;
+}
+
 void DivPlatformSGU::poke(unsigned int addr, unsigned short val) {
   rWrite(addr,val);
 }
@@ -1602,6 +1664,7 @@ void DivPlatformSGU::setFlags(const DivConfig& flags) {
   for (int i=0; i<SGU_CHNS; i++) {
     oscBuf[i]->setRate(rate);
   }
+  renderSamples(sysIDCache);
 }
 
 int DivPlatformSGU::init(DivEngine* p, int channels, int sugRate, const DivConfig& flags) {
@@ -1612,6 +1675,7 @@ int DivPlatformSGU::init(DivEngine* p, int channels, int sugRate, const DivConfi
     isMuted[i]=false;
     oscBuf[i]=new DivDispatchOscBuffer;
   }
+  sysIDCache=0;
   SGU_Init(&chip, SGU_PCM_RAM_SIZE);
   setFlags(flags);
   reset();

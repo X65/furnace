@@ -94,6 +94,9 @@ class DivPlatformSGU: public DivDispatch {
   unsigned int* sampleOffSU;
   bool* sampleLoaded;
 
+  int sysIDCache;
+  DivMemoryComposition memCompo;
+
   void writeControl(int ch);
   void writeControlUpper(int ch);
   void applyOpRegs(int ch, int o, const DivInstrumentFM::Operator& op, const DivInstrumentESFM::Operator& opE);
@@ -126,6 +129,12 @@ class DivPlatformSGU: public DivDispatch {
     bool getLegacyAlwaysSetVolume();
     void notifyInsChange(int ins);
     void notifyInsDeletion(void* ins);
+    const void* getSampleMem(int index);
+    size_t getSampleMemCapacity(int index);
+    size_t getSampleMemUsage(int index);
+    bool isSampleLoaded(int index, int sample);
+    const DivMemoryComposition* getMemCompo(int index);
+    void renderSamples(int sysID);
     int init(DivEngine* parent, int channels, int sugRate, const DivConfig& flags);
     void quit();
     DivPlatformSGU();
