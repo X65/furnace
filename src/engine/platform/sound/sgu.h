@@ -396,14 +396,13 @@ typedef enum : uint8_t
     SGU_WAVE_XOR_TRIANGLE = 7, // reserved (unimplemented)
 } sgu_waveform_t;
 
-// WPAR[1:0] selects 6-bit LFSR tap configuration for PERIODIC_NOISE
-typedef enum: uint8_t
-{
-    SGU_LFSR_6BIT_TAP34 = 0,   // taps 3,4 (~31 states)
-    SGU_LFSR_6BIT_TAP23 = 1,   // taps 2,3 (~31 states)
-    SGU_LFSR_6BIT_TAP023 = 2,  // taps 0,2,3 (~63 states)
-    SGU_LFSR_6BIT_TAP0235 = 3, // taps 0,2,3,5 (~63 states)
-} sgu_lfsr_type_t;
+// WPAR[3:0] bitmap enables LFSR stages for PERIODIC_NOISE
+// Multiple bits: shorter LFSRs gate (clock-enable) longer ones
+// Example: 0b1010 = 5-bit gates 9-bit (POKEY-style)
+#define SGU_LFSR_4BIT   0x01  // enable 4-bit (15 states) - POKEY POLY4
+#define SGU_LFSR_5BIT   0x02  // enable 5-bit (31 states) - POKEY POLY5
+#define SGU_LFSR_6BIT   0x04  // enable 6-bit (63 states) - maximal length
+#define SGU_LFSR_9BIT   0x08  // enable 9-bit (511 states) - POKEY POLY9
 
 // Envelope states
 enum envelope_state : uint8_t
@@ -563,6 +562,7 @@ struct SGU
         enum envelope_state envelope_state[SGU_OP_PER_CH]; // current envelope state
         uint32_t noise_lfsr[SGU_OP_PER_CH];                // per-operator noise LFSR state
         int16_t noise_out[SGU_OP_PER_CH];                  // per-operator noise S&H output
+        uint32_t gated_phase[SGU_OP_PER_CH];               // gated phase for chained LFSR
         bool phase_wrap[SGU_OP_PER_CH];                    // phase wrap flag for current sample (for SYNC)
         bool key_state[SGU_OP_PER_CH];                     // current key state: on or off
         bool keyon_live[SGU_OP_PER_CH];                    // live key on state
@@ -579,11 +579,11 @@ struct SGU
     int16_t waveform_lut[SGU_WAVEFORM_LENGTH / 2];
 
     // Precomputed LFSR tables for loop-free periodic noise generation
-    // SGU 6-bit LFSR tables (original SU modes)
-    uint8_t lfsr_6bit_tap34[31];   // taps 3,4 (~31 states)
-    uint8_t lfsr_6bit_tap23[31];   // taps 2,3 (~31 states)
-    uint8_t lfsr_6bit_tap023[63];  // taps 0,2,3 (~63 states)
-    uint8_t lfsr_6bit_tap0235[63]; // taps 0,2,3,5 (~63 states)
+    // POKEY-compatible tap configurations
+    uint8_t lfsr_4bit[15];    // 4-bit LFSR (taps 2,3) - POKEY POLY4
+    uint8_t lfsr_5bit[31];    // 5-bit LFSR (taps 2,4) - POKEY POLY5
+    uint8_t lfsr_6bit[63];    // 6-bit LFSR (taps 4,5) - maximal length
+    uint8_t lfsr_9bit[511];   // 9-bit LFSR (taps 4,8) - POKEY POLY9
 
     // src[i] = raw oscillator sample for channel i (16-bit, used for ring mod).
     // post[i] = processed sample after volume/filter (higher precision int32).

@@ -990,34 +990,55 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     break;
                     case SGU_WAVE_PERIODIC_NOISE:
                     {
-                        // Periodic noise: loop-free table lookup via WPAR[1:0]
-                        // Phase maps directly to table position: pos = (phase * period) >> 32
-                        uint8_t poly_sel = wpar & 3;
-                        uint32_t pos;
-                        uint8_t bit;
+                        // Periodic noise: bitmap LFSR selection with phase gating
+                        // WPAR[3:0] enables LFSR stages, shorter LFSRs gate longer ones
+                        uint32_t phase = ch_state->phase[op];
+                        const uint32_t prev_phase = ch_state->prev_phase[op];
+                        const uint32_t phase_delta = phase - prev_phase;
 
-                        switch (poly_sel)
+                        uint8_t gate = 0;
+                        uint8_t bit = 0;
+
+                        const uint8_t *tables[4] = {sgu->lfsr_4bit, sgu->lfsr_5bit, sgu->lfsr_6bit, sgu->lfsr_9bit};
+                        const uint32_t periods[4] = {15, 31, 63, 511};
+                        const uint8_t *gating = NULL;
+                        uint8_t gating_period = 0;
+                        const uint8_t *outing = NULL;
+                        uint8_t outing_period = 0;
+
+                        // Iterate from longest (bit 3) to shortest (bit 0)
+                        uint8_t lfsr_sel = wpar & 0x0F;
+                        for (int i = 3; i >= 0; i--)
                         {
-                        case SGU_LFSR_6BIT_TAP34:
-                            pos = ((uint64_t)ch_state->phase[op] * 31) >> 32;
-                            bit = sgu->lfsr_6bit_tap34[pos];
-                            break;
-                        case SGU_LFSR_6BIT_TAP23:
-                            pos = ((uint64_t)ch_state->phase[op] * 31) >> 32;
-                            bit = sgu->lfsr_6bit_tap23[pos];
-                            break;
-                        case SGU_LFSR_6BIT_TAP023:
-                            pos = ((uint64_t)ch_state->phase[op] * 63) >> 32;
-                            bit = sgu->lfsr_6bit_tap023[pos];
-                            break;
-                        case SGU_LFSR_6BIT_TAP0235:
-                        default:
-                            pos = ((uint64_t)ch_state->phase[op] * 63) >> 32;
-                            bit = sgu->lfsr_6bit_tap0235[pos];
-                            break;
+                            if (!(lfsr_sel & (1 << i)))
+                                continue;
+
+                            if (gating) {
+                                gate ^= gating[((uint64_t)phase * gating_period) >> 32];
+                            }
+                            if (outing) {
+                                gating = outing;
+                                gating_period = outing_period;
+                            }
+                            outing = tables[i];
+                            outing_period = periods[i];
                         }
 
-                        sample = bit ? 32767 : -32768;
+                        if (outing) {
+                            if (gating) {
+                                // Include the final gating LFSR in gate calculation
+                                gate ^= gating[((uint64_t)phase * gating_period) >> 32];
+
+                                if (gate)
+                                    ch_state->gated_phase[op] += phase_delta;
+                                phase = ch_state->gated_phase[op];
+                            }
+
+                            uint32_t pos = ((uint64_t)(phase) * outing_period) >> 32;
+                            bit = outing[pos];
+                            sample = bit ? 32767 : -32768;
+                        }
+
                     }
                     break;
                     }
@@ -1401,44 +1422,44 @@ void SGU_Init(struct SGU *sgu, size_t sampleMemSize)
     }
 
     // Build LFSR tables for periodic noise (loop-free table lookup)
-    // SGU 6-bit LFSR: taps 3,4 (period 31, shift-right)
+    // 4-bit LFSR: taps 2,3 (period 15) - POKEY POLY4
     {
-        uint32_t lfsr = 0x2A;
-        for (int i = 0; i < 31; i++)
+        uint32_t lfsr = 0x0A;
+        for (int i = 0; i < 15; i++)
         {
-            sgu->lfsr_6bit_tap34[i] = lfsr & 1;
-            uint32_t c = ((lfsr >> 3) ^ (lfsr >> 4)) & 1;
-            lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
-        }
-    }
-    // SGU 6-bit LFSR: taps 2,3 (period 31, shift-right)
-    {
-        uint32_t lfsr = 0x2A;
-        for (int i = 0; i < 31; i++)
-        {
-            sgu->lfsr_6bit_tap23[i] = lfsr & 1;
+            sgu->lfsr_4bit[i] = lfsr & 1;
             uint32_t c = ((lfsr >> 2) ^ (lfsr >> 3)) & 1;
+            lfsr = ((lfsr >> 1) | (c << 3)) & 0x0F;
+        }
+    }
+    // 5-bit LFSR: taps 2,4 (period 31) - POKEY POLY5
+    {
+        uint32_t lfsr = 0x1F;
+        for (int i = 0; i < 31; i++)
+        {
+            sgu->lfsr_5bit[i] = lfsr & 1;
+            uint32_t c = ((lfsr >> 2) ^ (lfsr >> 4)) & 1;
+            lfsr = ((lfsr >> 1) | (c << 4)) & 0x1F;
+        }
+    }
+    // 6-bit LFSR: taps 4,5 (period 63) - SU type
+    {
+        uint32_t lfsr = 0x3F;
+        for (int i = 0; i < 63; i++)
+        {
+            sgu->lfsr_6bit[i] = lfsr & 1;
+            uint32_t c = ((lfsr >> 4) ^ (lfsr >> 5)) & 1;
             lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
         }
     }
-    // SGU 6-bit LFSR: taps 0,2,3 (period 63, shift-right)
+    // 9-bit LFSR: taps 4,8 (period 511) - POKEY POLY9
     {
-        uint32_t lfsr = 0x2A;
-        for (int i = 0; i < 63; i++)
+        uint32_t lfsr = 0x1FF;
+        for (int i = 0; i < 511; i++)
         {
-            sgu->lfsr_6bit_tap023[i] = lfsr & 1;
-            uint32_t c = ((lfsr) ^ (lfsr >> 2) ^ (lfsr >> 3)) & 1;
-            lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
-        }
-    }
-    // SGU 6-bit LFSR: taps 0,2,3,5 (period 63, shift-right)
-    {
-        uint32_t lfsr = 0x2A;
-        for (int i = 0; i < 63; i++)
-        {
-            sgu->lfsr_6bit_tap0235[i] = lfsr & 1;
-            uint32_t c = ((lfsr) ^ (lfsr >> 2) ^ (lfsr >> 3) ^ (lfsr >> 5)) & 1;
-            lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
+            sgu->lfsr_9bit[i] = lfsr & 1;
+            uint32_t c = ((lfsr >> 4) ^ (lfsr >> 8)) & 1;
+            lfsr = ((lfsr >> 1) | (c << 8)) & 0x1FF;
         }
     }
 

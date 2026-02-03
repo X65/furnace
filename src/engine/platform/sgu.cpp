@@ -137,20 +137,21 @@ static const unsigned char pokeyToSguWave[8]={
 };
 
 // POKEY waveform to SGU WPAR mapping
-// WPAR[1:0] selects 6-bit LFSR tap configuration in PERIODIC_NOISE mode:
-//   0: taps 3,4 (~31 states)
-//   1: taps 2,3 (~31 states)
-//   2: taps 0,2,3 (~63 states)
-//   3: taps 0,2,3,5 (~63 states)
+// WPAR[3:0] bitmap enables LFSR stages for PERIODIC_NOISE:
+//   bit 0: 4-bit (15 states) - POKEY POLY4
+//   bit 1: 5-bit (31 states) - POKEY POLY5
+//   bit 2: 6-bit (63 states)
+//   bit 3: 9-bit (511 states) - approximates POKEY POLY9/17
+// Multiple bits: shorter LFSRs gate longer ones (POKEY-style)
 static const unsigned char pokeyToSguWpar[8]={
-  3, // 0: Harsh Noise -> TAP0235 (longest period)
-  1, // 1: Square Buzz -> TAP23
-  2, // 2: Weird Noise -> TAP023
-  1, // 3: Square Buzz -> TAP23
-  3, // 4: Soft Noise  -> TAP0235 (longest period)
-  0, // 5: Square      -> unused (PULSE waveform)
-  0, // 6: Bass        -> TAP34
-  0, // 7: Buzz        -> TAP34
+  SGU_LFSR_5BIT | SGU_LFSR_9BIT,  // 0: Harsh Noise (POLY5+17) -> 5-bit gates 9-bit
+  SGU_LFSR_5BIT,                  // 1: Square Buzz (POLY5)    -> 5-bit only
+  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 2: Weird Noise (POLY4+5)  -> 5-bit gates 4-bit
+  SGU_LFSR_5BIT,                  // 3: Square Buzz (POLY5)    -> 5-bit only
+  SGU_LFSR_9BIT,                  // 4: Soft Noise (POLY17)    -> 9-bit only
+  0,                              // 5: Square                 -> unused (PULSE)
+  SGU_LFSR_4BIT,                  // 6: Bass (POLY4)           -> 4-bit only
+  SGU_LFSR_4BIT,                  // 7: Buzz (POLY4)           -> 4-bit only
 };
 
 void DivPlatformSGU::acquire(short** buf, size_t len) {
@@ -715,7 +716,7 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
   opWrite(ch, o, 0x06, reg6);
   opWrite(ch, o, 0x07, reg7);
 
-  return;
+  // return;
   logD("SGU op ch=%d op=%d regs: %02X %02X %02X %02X %02X %02X %02X %02X (wave=%d op.ws=%d)",
     ch,
     o,
