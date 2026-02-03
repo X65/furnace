@@ -144,14 +144,14 @@ static const unsigned char pokeyToSguWave[8]={
 //   bit 3: 9-bit (511 states) - approximates POKEY POLY9/17
 // Multiple bits: shorter LFSRs gate longer ones (POKEY-style)
 static const unsigned char pokeyToSguWpar[8]={
-  SGU_LFSR_5BIT | SGU_LFSR_9BIT,  // 0: Harsh Noise (POLY5+17) -> 5-bit gates 9-bit
-  SGU_LFSR_5BIT,                  // 1: Square Buzz (POLY5)    -> 5-bit only
-  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 2: Weird Noise (POLY4+5)  -> 5-bit gates 4-bit
-  SGU_LFSR_5BIT,                  // 3: Square Buzz (POLY5)    -> 5-bit only
-  SGU_LFSR_9BIT,                  // 4: Soft Noise (POLY17)    -> 9-bit only
-  0,                              // 5: Square                 -> unused (PULSE)
-  SGU_LFSR_4BIT,                  // 6: Bass (POLY4)           -> 4-bit only
-  SGU_LFSR_4BIT,                  // 7: Buzz (POLY4)           -> 4-bit only
+  SGU_LFSR_5BIT | SGU_LFSR_9BIT,  // 0: Harsh Noise - POLY5+17 classic
+  SGU_LFSR_5BIT,                  // 1: Square Buzz - pure POLY5
+  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 2: Weird Noise - POLY4+5 classic
+  SGU_LFSR_5BIT | SGU_LFSR_6BIT,  // 3: Square Buzz 2 - buzz with 6-bit variation
+  SGU_LFSR_9BIT,                  // 4: Soft Noise - POLY9/17
+  0,                              // 5: Square (PULSE waveform)
+  SGU_LFSR_4BIT,                  // 6: Bass - tight metallic
+  SGU_LFSR_4BIT | SGU_LFSR_6BIT,  // 7: Buzz - metallic with 6-bit gating
 };
 
 void DivPlatformSGU::acquire(short** buf, size_t len) {
@@ -290,9 +290,9 @@ void DivPlatformSGU::tick(bool sysTick) {
           ins->type==DIV_INS_C64 || ins->type==DIV_INS_SID2) {
         unsigned char wave=suToSguWaveformMap[chan[i].std.wave.val&7];
         chan[i].state.fm.op[3].ws=wave;
-        // For SU PERIODIC_NOISE, copy duty[5:4] tap selection to WPAR[1:0]
+        // For SU PERIODIC_NOISE, copy duty[7:4] to WPAR[3:0] (LFSR bitmap)
         if (wave==SGU_WAVE_PERIODIC_NOISE) {
-          unsigned char suMode=(chan[i].duty>>4)&3;
+          unsigned char suMode=(chan[i].duty>>4)&0x0F;
           chan[i].wpar[3]=suMode;
         }
         applyOpRegs(i, 3, chan[i].state.fm.op[3], chan[i].state.esfm.op[3]);
@@ -1341,9 +1341,9 @@ int DivPlatformSGU::dispatch(DivCommand c) {
           // Single-oscillator instruments: set waveform on output operator (op3)
           unsigned char wave=suToSguWaveformMap[c.value&7];
           chan[c.chan].state.fm.op[3].ws=wave;
-          // For SU PERIODIC_NOISE, copy duty[5:4] tap selection to WPAR[1:0]
+          // For SU PERIODIC_NOISE, copy duty[7:4] to WPAR[3:0] (LFSR bitmap)
           if (wave==SGU_WAVE_PERIODIC_NOISE) {
-            unsigned char suMode=(chan[c.chan].duty>>4)&3;
+            unsigned char suMode=(chan[c.chan].duty>>4)&0x0F;
             chan[c.chan].wpar[3]=suMode;
           }
           applyOpRegs(c.chan, 3, chan[c.chan].state.fm.op[3], chan[c.chan].state.esfm.op[3]);

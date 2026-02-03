@@ -582,7 +582,7 @@ struct SGU
     // POKEY-compatible tap configurations
     uint8_t lfsr_4bit[15];    // 4-bit LFSR (taps 2,3) - POKEY POLY4
     uint8_t lfsr_5bit[31];    // 5-bit LFSR (taps 2,4) - POKEY POLY5
-    uint8_t lfsr_6bit[63];    // 6-bit LFSR (taps 4,5) - maximal length
+    uint8_t lfsr_6bit[63];    // 6-bit LFSR (taps 4,5) - SU like
     uint8_t lfsr_9bit[511];   // 9-bit LFSR (taps 4,8) - POKEY POLY9
 
     // src[i] = raw oscillator sample for channel i (16-bit, used for ring mod).
