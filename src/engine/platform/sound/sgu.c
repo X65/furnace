@@ -716,11 +716,10 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
 
         if (sgu->chan[ch].flags0 & SGU1_FLAGS0_PCM_MASK) // PCM mode
         {
-            // Signed 8-bit PCM sample at current position to signed 16-bit.
-            ch_sample = (int16_t)sgu->pcm[sgu->chan[ch].pcmpos] << 8;
+            // Signed 8-bit PCM sample scaled to match FM operator output (~14-bit range).
+            ch_sample = (int16_t)sgu->pcm[sgu->chan[ch].pcmpos] << 6;
 
-            // pcmdec accumulates a fractional step. When it crosses 32768, advance pcmpos by 1.
-            // Special case: if freq > 0x8000, treat as "at least 1.0 step" (clamps very high rates).
+            // PCM phase accumulator. When it crosses 0x8000, advance sample position by 1.
             if (sgu->chan[ch].freq > 0x8000)
                 sgu->pcm_phase_accum[ch] += 0x8000;
             else
