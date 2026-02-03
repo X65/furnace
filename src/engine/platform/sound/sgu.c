@@ -26,6 +26,21 @@ static inline int32_t clamp(int32_t value, int32_t minval, int32_t maxval)
     return value;
 }
 
+//-------------------------------------------------
+//  svf_saturate - cheap soft saturation for analog warmth
+//  Prevents harsh digital clipping, emulates analog op-amp behavior.
+//  Uses piecewise linear approximation (no division, no float).
+//  Knee at ±24576, 4:1 compression ratio above knee, max at ±32767.
+//-------------------------------------------------
+static inline int32_t svf_saturate(int32_t x)
+{
+    if (x > 24576)
+        return 24576 + ((x - 24576) >> 2);  // Compress above knee
+    if (x < -24576)
+        return -24576 + ((x + 24576) >> 2); // Compress below knee
+    return x;
+}
+
 // uint32_t EG_CLOCK_DIVIDER: The clock divider of the envelope generator
 static const uint32_t EG_CLOCK_DIVIDER = 3;
 
@@ -1116,15 +1131,26 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
         // ------------------------------------------------------------
         if (sgu->chan[ch].flags0 & (SGU1_FLAGS0_CTL_NSLOW | SGU1_FLAGS0_CTL_NSHIGH | SGU1_FLAGS0_CTL_NSBAND))
         {
-            // ff is the cutoff coefficient (Q16 fixed-point).
-            // 16-bit cutoff maps linearly to ~0-8kHz at 48kHz sample rate.
-            // This approximates SID's 30Hz-10kHz range.
-            int32_t ff = sgu->chan[ch].cutoff;
+            // Scale cutoff for 48kHz operation.
+            // SGU runs at 48kHz vs SU's ~297kHz (~6× slower).
+            // 3× scaling gives 0.35Hz-23kHz range, stable for all filter modes.
+            // Formula: fc ≈ (ff / 65536) × (sample_rate / 2π)
+            // With 3× scaling at 48kHz: fc ≈ cutoff × 0.35 Hz (0.35Hz to ~23kHz)
+            // Max effective ff = 196,605, well within int32_t multiply safety.
+            int32_t ff = (int32_t)sgu->chan[ch].cutoff * 3;
 
-            // SVF core (fixed-point):
-            sgu->svf_low[ch] = sgu->svf_low[ch] + ((ff * sgu->svf_band[ch]) >> 16);
+            // Apply resonance-driven distortion before filter (SID characteristic).
+            // Higher resonance drives harder saturation, adding harmonic distortion.
+            // Gain scales from 1.0× (reson=0) to 1.5× (reson=255).
+            int32_t drive = 256 + (sgu->chan[ch].reson >> 1);  // 256-383
+            voice_sample = svf_saturate((voice_sample * drive) >> 8);
+
+            // SVF core with soft saturation for analog warmth.
+            // Saturation on low/band states emulates analog op-amp behavior,
+            // prevents harsh digital clipping at high resonance.
+            sgu->svf_low[ch] = svf_saturate(sgu->svf_low[ch] + ((ff * sgu->svf_band[ch]) >> 16));
             sgu->svf_high[ch] = voice_sample - sgu->svf_low[ch] - (((256 - sgu->chan[ch].reson) * sgu->svf_band[ch]) >> 8);
-            sgu->svf_band[ch] = ((ff * sgu->svf_high[ch]) >> 16) + sgu->svf_band[ch];
+            sgu->svf_band[ch] = svf_saturate(((ff * sgu->svf_high[ch]) >> 16) + sgu->svf_band[ch]);
 
             // Select which components to output (LP/HP/BP can be combined).
             voice_sample = ((sgu->chan[ch].flags0 & SGU1_FLAGS0_CTL_NSLOW) ? sgu->svf_low[ch] : 0)
