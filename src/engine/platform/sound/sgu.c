@@ -990,47 +990,34 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     break;
                     case SGU_WAVE_PERIODIC_NOISE:
                     {
-                        // Periodic noise: uses smaller 6-bit LFSR with configurable taps (su.c style)
-                        // WPAR[1:0] selects LFSR tap configuration (per-operator timbre control)
-                        uint8_t tap_sel = wpar & 3;
+                        // Periodic noise: loop-free table lookup via WPAR[1:0]
+                        // Phase maps directly to table position: pos = (phase * period) >> 32
+                        uint8_t poly_sel = wpar & 3;
+                        uint32_t pos;
+                        uint8_t bit;
 
-                        // SU-compatible frequency scaling: detect transitions at higher bit rates
-                        // Base rate uses bit 29, then scale by tap:
-                        // tap 0: bit 29, tap 1: bit 28, tap 2: bit 27, tap 3: bit 26
-                        // This gives approximately 4x frequency increase per tap step
-                        uint8_t shift = 29 - tap_sel;
-                        uint32_t transitions = ((ch_state->phase[op] >> shift) - (ch_state->prev_phase[op] >> shift)) & 0xF;
-                        // Mask to 6 bits to prevent pollution from upper bits of 32-bit storage
-                        uint32_t lfsr = ch_state->noise_lfsr[op] & 0x3F;
-                        while (transitions--)
+                        switch (poly_sel)
                         {
-                            // 6-bit LFSR with tap selection from WPAR (feedback to bit 5)
-                            // Shift within 6-bit domain: mask input to prevent upper bit pollution
-                            uint32_t feedback;
-                            switch (tap_sel)
-                            {
-                            case 0:
-                                feedback = ((lfsr >> 3) ^ (lfsr >> 4)) & 1;
-                                break;
-                            case 1:
-                                feedback = ((lfsr >> 2) ^ (lfsr >> 3)) & 1;
-                                break;
-                            case 2:
-                                feedback = ((lfsr) ^ (lfsr >> 2) ^ (lfsr >> 3)) & 1;
-                                break;
-                            case 3:
-                            default:
-                                feedback = ((lfsr) ^ (lfsr >> 2) ^ (lfsr >> 3) ^ (lfsr >> 5)) & 1;
-                                break;
-                            }
-                            lfsr = ((lfsr >> 1) | (feedback << 5)) & 0x3F;
-                            // Avoid stuck state (su.c convention)
-                            if (lfsr == 0)
-                                lfsr = 0x2A; // 6-bit seed (not 0xAAAA which has upper bits set)
+                        case SGU_LFSR_6BIT_TAP34:
+                            pos = ((uint64_t)ch_state->phase[op] * 31) >> 32;
+                            bit = sgu->lfsr_6bit_tap34[pos];
+                            break;
+                        case SGU_LFSR_6BIT_TAP23:
+                            pos = ((uint64_t)ch_state->phase[op] * 31) >> 32;
+                            bit = sgu->lfsr_6bit_tap23[pos];
+                            break;
+                        case SGU_LFSR_6BIT_TAP023:
+                            pos = ((uint64_t)ch_state->phase[op] * 63) >> 32;
+                            bit = sgu->lfsr_6bit_tap023[pos];
+                            break;
+                        case SGU_LFSR_6BIT_TAP0235:
+                        default:
+                            pos = ((uint64_t)ch_state->phase[op] * 63) >> 32;
+                            bit = sgu->lfsr_6bit_tap0235[pos];
+                            break;
                         }
-                        ch_state->noise_lfsr[op] = lfsr;
-                        // Bipolar output spanning full INT16 range
-                        sample = (lfsr & 1) ? 32767 : -32768;
+
+                        sample = bit ? 32767 : -32768;
                     }
                     break;
                     }
@@ -1411,6 +1398,48 @@ void SGU_Init(struct SGU *sgu, size_t sampleMemSize)
         // sine
         const float sin_val = sin(((float)i / ((float)SGU_WAVEFORM_LENGTH / 2)) * M_PI) * INT16_MAX;
         sgu->waveform_lut[i] = (int16_t)sin_val;
+    }
+
+    // Build LFSR tables for periodic noise (loop-free table lookup)
+    // SGU 6-bit LFSR: taps 3,4 (period 31, shift-right)
+    {
+        uint32_t lfsr = 0x2A;
+        for (int i = 0; i < 31; i++)
+        {
+            sgu->lfsr_6bit_tap34[i] = lfsr & 1;
+            uint32_t c = ((lfsr >> 3) ^ (lfsr >> 4)) & 1;
+            lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
+        }
+    }
+    // SGU 6-bit LFSR: taps 2,3 (period 31, shift-right)
+    {
+        uint32_t lfsr = 0x2A;
+        for (int i = 0; i < 31; i++)
+        {
+            sgu->lfsr_6bit_tap23[i] = lfsr & 1;
+            uint32_t c = ((lfsr >> 2) ^ (lfsr >> 3)) & 1;
+            lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
+        }
+    }
+    // SGU 6-bit LFSR: taps 0,2,3 (period 63, shift-right)
+    {
+        uint32_t lfsr = 0x2A;
+        for (int i = 0; i < 63; i++)
+        {
+            sgu->lfsr_6bit_tap023[i] = lfsr & 1;
+            uint32_t c = ((lfsr) ^ (lfsr >> 2) ^ (lfsr >> 3)) & 1;
+            lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
+        }
+    }
+    // SGU 6-bit LFSR: taps 0,2,3,5 (period 63, shift-right)
+    {
+        uint32_t lfsr = 0x2A;
+        for (int i = 0; i < 63; i++)
+        {
+            sgu->lfsr_6bit_tap0235[i] = lfsr & 1;
+            uint32_t c = ((lfsr) ^ (lfsr >> 2) ^ (lfsr >> 3) ^ (lfsr >> 5)) & 1;
+            lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
+        }
     }
 
     // Build pan gain lookup tables (same as su.c)

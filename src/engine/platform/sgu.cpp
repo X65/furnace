@@ -124,6 +124,35 @@ static const unsigned char suToSguWaveformMap[8]={
   /* 7: XOR_TRIANGLE   -> */ SGU_WAVE_TRIANGLE,
 };
 
+// POKEY waveform to SGU waveform mapping
+static const unsigned char pokeyToSguWave[8]={
+  /* 0: Harsh Noise (POLY5+17) -> */ SGU_WAVE_PERIODIC_NOISE,
+  /* 1: Square Buzz (POLY5)    -> */ SGU_WAVE_PERIODIC_NOISE,
+  /* 2: Weird Noise (POLY4+5)  -> */ SGU_WAVE_PERIODIC_NOISE,
+  /* 3: Square Buzz (POLY5)    -> */ SGU_WAVE_PERIODIC_NOISE,
+  /* 4: Soft Noise (POLY17)    -> */ SGU_WAVE_PERIODIC_NOISE,
+  /* 5: Square                 -> */ SGU_WAVE_PULSE,
+  /* 6: Bass (POLY4)           -> */ SGU_WAVE_PERIODIC_NOISE,
+  /* 7: Buzz (POLY4)           -> */ SGU_WAVE_PERIODIC_NOISE,
+};
+
+// POKEY waveform to SGU WPAR mapping
+// WPAR[1:0] selects 6-bit LFSR tap configuration in PERIODIC_NOISE mode:
+//   0: taps 3,4 (~31 states)
+//   1: taps 2,3 (~31 states)
+//   2: taps 0,2,3 (~63 states)
+//   3: taps 0,2,3,5 (~63 states)
+static const unsigned char pokeyToSguWpar[8]={
+  3, // 0: Harsh Noise -> TAP0235 (longest period)
+  1, // 1: Square Buzz -> TAP23
+  2, // 2: Weird Noise -> TAP023
+  1, // 3: Square Buzz -> TAP23
+  3, // 4: Soft Noise  -> TAP0235 (longest period)
+  0, // 5: Square      -> unused (PULSE waveform)
+  0, // 6: Bass        -> TAP34
+  0, // 7: Buzz        -> TAP34
+};
+
 void DivPlatformSGU::acquire(short** buf, size_t len) {
   thread_local int32_t o[2];
   for (int i=0; i<SGU_CHNS; i++) {
@@ -216,7 +245,13 @@ void DivPlatformSGU::tick(bool sysTick) {
 
     // Volume macro
     if (chan[i].std.vol.had) {
-      chan[i].outVol=VOL_SCALE_LOG_BROKEN(chan[i].vol,MIN(127,chan[i].std.vol.val),127);
+      DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_ESFM);
+      int macroVal=chan[i].std.vol.val;
+      // Scale POKEY 4-bit volume (0-15) to SGU 7-bit (0-127)
+      if (ins->type==DIV_INS_POKEY) {
+        macroVal=MIN(15,macroVal)*127/15;
+      }
+      chan[i].outVol=VOL_SCALE_LOG_BROKEN(chan[i].vol,MIN(127,macroVal),127);
       chWrite(i, SGU1_CHN_VOL, chan[i].outVol);
     }
 
@@ -238,7 +273,19 @@ void DivPlatformSGU::tick(bool sysTick) {
     if (chan[i].std.wave.had) {
       // For SU/single-oscillator instruments, set waveform on output operator (op3)
       DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
-      if (ins->type==DIV_INS_SU || ins->type==DIV_INS_POKEY ||
+      if (ins->type==DIV_INS_POKEY) {
+        // POKEY uses polynomial noise - map to SGU 6-bit LFSR modes
+        // WPAR[1:0] selects tap configuration (0-3)
+        unsigned char waveIdx=chan[i].std.wave.val&7;
+        chan[i].state.fm.op[3].ws=pokeyToSguWave[waveIdx];
+        chan[i].wpar[3]=pokeyToSguWpar[waveIdx];
+        // For PULSE (square wave), set 50% duty cycle
+        if (pokeyToSguWave[waveIdx]==SGU_WAVE_PULSE) {
+          chan[i].duty=0x3F;
+          chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+        }
+        applyOpRegs(i, 3, chan[i].state.fm.op[3], chan[i].state.esfm.op[3]);
+      } else if (ins->type==DIV_INS_SU ||
           ins->type==DIV_INS_C64 || ins->type==DIV_INS_SID2) {
         unsigned char wave=suToSguWaveformMap[chan[i].std.wave.val&7];
         chan[i].state.fm.op[3].ws=wave;
@@ -782,6 +829,12 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
         case DIV_INS_SU:
           op.ws=suToSguWaveformMap[op.ws & 0x07];
           break;
+        case DIV_INS_POKEY:
+          // POKEY: square wave (PULSE) or polynomial noise
+          // Waveform may be changed to PERIODIC_NOISE by wave macro
+          op.ws = SGU_WAVE_PULSE;
+          chan[ch].wpar[o]=0;
+          break;
         default:
           break;
       }
@@ -1041,6 +1094,7 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
     case DIV_INS_POKEY:
       {
         // POKEY uses single carrier on op3 with instant envelope
+        // Default waveform is PULSE (square wave), WPAR used for polynomial noise
         if (o==3) {
           fm.op[o].enable=true;
           fm.op[o].ar=31;
@@ -1050,7 +1104,9 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
           fm.op[o].d2r=0;
           fm.op[o].tl=0;
           fm.op[o].mult=1;
-          fm.op[o].ws=SGU_WAVE_PULSE;
+          fm.op[o].ws=SGU_WAVE_PULSE; // default to square (POKEY wave 5)
+          chan[ch].wpar[o]=0; // WPAR unused for PULSE, set by wave macro for noise
+          chan[ch].duty=0x3F; // 50% duty cycle for square wave
         } else {
           fm.op[o].tl=127;
           fm.op[o].enable=false;
@@ -1187,15 +1243,21 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     case DIV_CMD_GET_VOLMAX:
       return ins->type==DIV_INS_ESFM ? 0x3F : 0x7F;
       break;
-    case DIV_CMD_VOLUME:
-      if (chan[c.chan].vol!=c.value) {
-        chan[c.chan].vol=c.value;
+    case DIV_CMD_VOLUME: {
+      int vol=c.value;
+      // Scale POKEY 4-bit volume (0-15) to SGU 7-bit (0-127)
+      if (ins->type==DIV_INS_POKEY) {
+        vol=MIN(15,vol)*127/15;
+      }
+      if (chan[c.chan].vol!=vol) {
+        chan[c.chan].vol=vol;
         if (!chan[c.chan].std.vol.has) {
-          chan[c.chan].outVol=c.value;
+          chan[c.chan].outVol=vol;
           if (chan[c.chan].active) chWrite(c.chan,SGU1_CHN_VOL,chan[c.chan].outVol);
         }
       }
       break;
+    }
     case DIV_CMD_GET_VOLUME:
       return chan[c.chan].vol;
       break;
@@ -1258,8 +1320,21 @@ int DivPlatformSGU::dispatch(DivCommand c) {
     }
     case DIV_CMD_WAVE:
       switch (ins->type) {
+        case DIV_INS_POKEY: {
+          // POKEY uses polynomial noise - map to SGU 6-bit LFSR modes
+          // WPAR[1:0] selects tap configuration (0-3)
+          unsigned char waveIdx=c.value&7;
+          chan[c.chan].state.fm.op[3].ws=pokeyToSguWave[waveIdx];
+          chan[c.chan].wpar[3]=pokeyToSguWpar[waveIdx];
+          // For PULSE (square wave), set 50% duty cycle
+          if (pokeyToSguWave[waveIdx]==SGU_WAVE_PULSE) {
+            chan[c.chan].duty=0x3F;
+            chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
+          }
+          applyOpRegs(c.chan, 3, chan[c.chan].state.fm.op[3], chan[c.chan].state.esfm.op[3]);
+          break;
+        }
         case DIV_INS_SU:
-        case DIV_INS_POKEY:
         case DIV_INS_C64:
         case DIV_INS_SID2: {
           // Single-oscillator instruments: set waveform on output operator (op3)

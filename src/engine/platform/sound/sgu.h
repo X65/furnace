@@ -171,7 +171,11 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 - SINE, TRIANGLE
   bit 0 => skew waveform peak position using channel duty value
 - PERIODIC_NOISE
-  bits 0..1 => LFSR tap configuration (0-3) for different timbres
+  WPAR[1:0] selects 6-bit LFSR tap configuration:
+    0: taps 3,4 (~31 states)
+    1: taps 2,3 (~31 states)
+    2: taps 0,2,3 (~63 states)
+    3: taps 0,2,3,5 (~63 states)
   This is per-operator, allowing different noise timbres in each operator
 
 
@@ -373,13 +377,13 @@ extern "C" {
 
 // Waveform types for operator R7[2:0] (0..5 implemented)
 // - WAVE_NOISE: 32-bit LFSR white noise, SID-compatible clocking (freq16 * 0.9537 Hz)
-// - WAVE_PERIODIC_NOISE: 6-bit LFSR metallic/tonal noise
+// - WAVE_PERIODIC_NOISE: Configurable 6-bit LFSR metallic/tonal noise
 //     Frequency: channel freq16 × operator multiplier (R0[3:0])
-//     Timbre: WPAR[1:0] selects LFSR tap configuration (per-operator):
-//       0: taps 3,4     (~31 states)
-//       1: taps 2,3     (~31 states)
-//       2: taps 0,2,3   (different timbre)
-//       3: taps 0,2,3,5 (max length ~63 states)
+//     Timbre: WPAR[1:0] selects tap configuration (per-operator):
+//       0: taps 3,4 (~31 states)
+//       1: taps 2,3 (~31 states)
+//       2: taps 0,2,3 (~63 states)
+//       3: taps 0,2,3,5 (~63 states)
 typedef enum : uint8_t
 {
     SGU_WAVE_SINE = 0,
@@ -391,6 +395,15 @@ typedef enum : uint8_t
     SGU_WAVE_XOR_SINE = 6,     // reserved (unimplemented)
     SGU_WAVE_XOR_TRIANGLE = 7, // reserved (unimplemented)
 } sgu_waveform_t;
+
+// WPAR[1:0] selects 6-bit LFSR tap configuration for PERIODIC_NOISE
+typedef enum: uint8_t
+{
+    SGU_LFSR_6BIT_TAP34 = 0,   // taps 3,4 (~31 states)
+    SGU_LFSR_6BIT_TAP23 = 1,   // taps 2,3 (~31 states)
+    SGU_LFSR_6BIT_TAP023 = 2,  // taps 0,2,3 (~63 states)
+    SGU_LFSR_6BIT_TAP0235 = 3, // taps 0,2,3,5 (~63 states)
+} sgu_lfsr_type_t;
 
 // Envelope states
 enum envelope_state : uint8_t
@@ -549,6 +562,7 @@ struct SGU
         uint16_t envelope_attenuation[SGU_OP_PER_CH];      // computed envelope attenuation (4.6 format)
         enum envelope_state envelope_state[SGU_OP_PER_CH]; // current envelope state
         uint32_t noise_lfsr[SGU_OP_PER_CH];                // per-operator noise LFSR state
+        int16_t noise_out[SGU_OP_PER_CH];                  // per-operator noise S&H output
         bool phase_wrap[SGU_OP_PER_CH];                    // phase wrap flag for current sample (for SYNC)
         bool key_state[SGU_OP_PER_CH];                     // current key state: on or off
         bool keyon_live[SGU_OP_PER_CH];                    // live key on state
@@ -563,6 +577,13 @@ struct SGU
 
     // precomputed waveforms (1024 samples each)
     int16_t waveform_lut[SGU_WAVEFORM_LENGTH / 2];
+
+    // Precomputed LFSR tables for loop-free periodic noise generation
+    // SGU 6-bit LFSR tables (original SU modes)
+    uint8_t lfsr_6bit_tap34[31];   // taps 3,4 (~31 states)
+    uint8_t lfsr_6bit_tap23[31];   // taps 2,3 (~31 states)
+    uint8_t lfsr_6bit_tap023[63];  // taps 0,2,3 (~63 states)
+    uint8_t lfsr_6bit_tap0235[63]; // taps 0,2,3,5 (~63 states)
 
     // src[i] = raw oscillator sample for channel i (16-bit, used for ring mod).
     // post[i] = processed sample after volume/filter (higher precision int32).
