@@ -126,21 +126,16 @@ static const unsigned char suToSguWaveformMap[8]={
 
 // POKEY waveform to SGU WPAR mapping
 // WPAR=0 means "no poly" (pure tone) - driver uses PULSE wave instead
-// WPAR[3:0] bitmap enables LFSR stages for PERIODIC_NOISE:
-//   bit 0: 4-bit (15 states) - POKEY POLY4
-//   bit 1: 5-bit (31 states) - POKEY POLY5
-//   bit 2: 6-bit (63 states) - SU original
-//   bit 3: 9-bit (511 states) - approximates POKEY POLY9/17
-// Multiple bits: longer gates shorter (sample-and-hold)
+// WPAR[1:0] selects 6-bit LFSR tap configuration (see sgu_lfsr_t enum)
 static const unsigned char pokeyToSguWpar[8]={
-  SGU_LFSR_5BIT | SGU_LFSR_9BIT,  // 0 $00: 5-bit then 17-bit polys -> 9-bit gates 5-bit
-  SGU_LFSR_5BIT,                  // 1 $20: 5-bit poly only
-  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 2 $40: 5-bit then 4-bit polys  -> 5-bit gates 4-bit
-  SGU_LFSR_5BIT,                  // 3 $60: 5-bit poly only
-  SGU_LFSR_9BIT,                  // 4 $80: 17-bit poly only        -> 9-bit only
-  0,                              // 5 $A0: no poly (pure tone)
-  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 6 $C0: 5-bit then 4-bit polys  -> 5-bit gates 4-bit
-  SGU_LFSR_4BIT | SGU_LFSR_5BIT,  // 7 $E0: same as 6 (per waveMap in pokey.cpp)
+  SGU_LFSR_TAP023,   // 0 $00: POLY5 gated by POLY17/9 - intermediate complexity
+  SGU_LFSR_TAP23,    // 1 $20: POLY5 only - simple periodic
+  SGU_LFSR_TAP34,    // 2 $40: POLY4 gated by POLY5 - buzz
+  SGU_LFSR_TAP23,    // 3 $60: POLY5 only (same as 1)
+  SGU_LFSR_TAP0235,  // 4 $80: POLY17/9 only - most like white noise
+  0,                 // 5 $A0: no poly (pure tone) -> PULSE
+  SGU_LFSR_TAP34,    // 6 $C0: POLY4 gated by POLY5 (same as 2) - buzz
+  SGU_LFSR_TAP34,    // 7 $E0: same as 6
 };
 
 void DivPlatformSGU::acquire(short** buf, size_t len) {
@@ -281,9 +276,24 @@ void DivPlatformSGU::tick(bool sysTick) {
         unsigned char wave=suToSguWaveformMap[chan[i].std.wave.val&7];
         chan[i].state.fm.op[3].ws=wave;
         // For SU PERIODIC_NOISE, copy duty[3:0] tap selection to WPAR[3:0]
+        // and apply frequency scaling based on WPAR (matches SU duty>>4 behavior)
         if (wave==SGU_WAVE_PERIODIC_NOISE) {
-          unsigned char suMode=(chan[i].duty>>3)&0x0F;
-          chan[i].wpar[3]=suMode;
+          unsigned char wpar=(chan[i].duty>>4)&0x0F;
+          chan[i].wpar[3]=wpar;
+          switch (wpar&3) {
+            case 0:
+              chan[i].state.fm.op[3].mult=1;
+              break;
+            case 1:
+              chan[i].state.fm.op[3].mult=2;
+              break;
+            case 2:
+              chan[i].state.fm.op[3].mult=4;
+              break;
+            case 3:
+              chan[i].state.fm.op[3].mult=8;
+              break;
+          }
         }
         applyOpRegs(i, 3, chan[i].state.fm.op[3], chan[i].state.esfm.op[3]);
       }
@@ -623,10 +633,30 @@ void DivPlatformSGU::muteChannel(int ch, bool mute) {
 
 void DivPlatformSGU::writeControl(int ch) {
   // FLAGS0: [7:4]CONTROL [3]PCM [2:1]--- [0]GATE
-  chWrite(ch, SGU1_CHN_FLAGS0,
+  unsigned char flags0 =
     ((chan[ch].active && chan[ch].gate) ? SGU1_FLAGS0_CTL_GATE : 0)
     | (chan[ch].pcm << SGU1_FLAGS0_PCM_SHIFT)
-    | (chan[ch].control << SGU1_FLAGS0_CONTROL_SHIFT));
+    | (chan[ch].control << SGU1_FLAGS0_CONTROL_SHIFT);
+  chWrite(ch, SGU1_CHN_FLAGS0, flags0);
+
+  // Debug: dump channel registers
+  logD("SGU ch=%d regs: FREQ=%04X VOL=%02X PAN=%02X FLAGS0=%02X DUTY=%02X CUTOFF=%04X RESON=%02X",
+    ch,
+    static_cast<unsigned int>(chan[ch].freq),
+    static_cast<unsigned int>(chan[ch].outVol & 0xFF),
+    static_cast<unsigned int>(chan[ch].pan & 0xFF),
+    static_cast<unsigned int>(flags0),
+    static_cast<unsigned int>(chan[ch].duty),
+    static_cast<unsigned int>(chan[ch].cutoff),
+    static_cast<unsigned int>(chan[ch].res));
+  logD("SGU ch=%d dec: GATE=%u PCM=%u CONTROL=%X DUTY=%u CUTOFF=%u RESON=%u",
+    ch,
+    (flags0 & SGU1_FLAGS0_CTL_GATE) != 0,
+    (flags0 & SGU1_FLAGS0_PCM_MASK) >> SGU1_FLAGS0_PCM_SHIFT,
+    (flags0 >> SGU1_FLAGS0_CONTROL_SHIFT) & 0xF,
+    static_cast<unsigned int>(chan[ch].duty),
+    static_cast<unsigned int>(chan[ch].cutoff),
+    static_cast<unsigned int>(chan[ch].res));
 }
 
 void DivPlatformSGU::writeControlUpper(int ch) {
@@ -1088,8 +1118,26 @@ void DivPlatformSGU::commitState(int ch, DivInstrument* ins) {
           fm.op[o].sl=0;
           fm.op[o].rr=15;
           fm.op[o].d2r=0;
-          fm.op[o].tl=15; // SU originally plays much quieter tha SGU
-          fm.op[o].mult=1;
+          fm.op[o].tl=7; // SU originally plays quieter than SGU
+          // Frequency scaling for periodic noise based on WPAR (matches SU duty>>4 behavior)
+          if (fm.op[o].ws==SGU_WAVE_PERIODIC_NOISE) {
+            switch (chan[ch].wpar[o]&3) {
+              case 0:
+                fm.op[o].mult=1;
+                break;
+              case 1:
+                fm.op[o].mult=2;
+                break;
+              case 2:
+                fm.op[o].mult=4;
+                break;
+              case 3:
+                fm.op[o].mult=8;
+                break;
+            }
+          } else {
+            fm.op[o].mult=1;
+          }
         } else {
           fm.op[o].tl=127;
           fm.op[o].enable=false;

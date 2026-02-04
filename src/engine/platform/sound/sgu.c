@@ -47,44 +47,6 @@ static const uint32_t EG_CLOCK_DIVIDER = 3;
 // "quiet" value, used to optimize when we can skip doing work
 static const uint32_t EG_QUIET = 0x380;
 
-#if SGU_EG_DEBUG
-static const char *eg_state_name(enum envelope_state st)
-{
-    switch (st)
-    {
-    case SGU_EG_ATTACK:
-        return "ATT";
-    case SGU_EG_DECAY:
-        return "DEC";
-    case SGU_EG_SUSTAIN:
-        return "SUS";
-    case SGU_EG_RELEASE:
-        return "REL";
-    default:
-        return "?";
-    }
-}
-static void eg_debug_transition(struct SGU *sgu, uint8_t ch, uint8_t op, enum envelope_state from, enum envelope_state to)
-{
-    struct sgu_ch_state *st = &sgu->m_channel[ch];
-    uint32_t now = sgu->sample_counter;
-    uint32_t last = st->eg_last_transition[op];
-    uint32_t delta = now - last;
-    st->eg_last_transition[op] = now;
-    st->eg_last_state[op] = to;
-    double ms = (double)delta * 1000.0 / (double)SGU_CHIP_CLOCK;
-    printf("SGU EG ch%u op%u %s->%s %u samples (%.2f ms)\n",
-           ch, op, eg_state_name(from), eg_state_name(to), delta, ms);
-}
-static void eg_debug_key(struct SGU *sgu, uint8_t ch, uint8_t op, bool on)
-{
-    uint32_t now = sgu->sample_counter;
-    double ms = (double)now * 1000.0 / (double)SGU_CHIP_CLOCK;
-    printf("SGU EG ch%u op%u KEY_%s at %u samples (%.2f ms)\n",
-           ch, op, on ? "ON" : "OFF", now, ms);
-}
-#endif
-
 //-------------------------------------------------
 //  bitfield - extract a bitfield from the given
 //  value, starting at bit 'start' for a length of
@@ -137,14 +99,14 @@ static inline int32_t detune_adjustment(uint32_t detune, uint32_t keycode)
 {
     static uint8_t const s_detune_adjustment[32][4] = {
         // clang-format off
-		{ 0,  0,  1,  2 },  { 0,  0,  1,  2 },  { 0,  0,  1,  2 },  { 0,  0,  1,  2 },
-		{ 0,  1,  2,  2 },  { 0,  1,  2,  3 },  { 0,  1,  2,  3 },  { 0,  1,  2,  3 },
-		{ 0,  1,  2,  4 },  { 0,  1,  3,  4 },  { 0,  1,  3,  4 },  { 0,  1,  3,  5 },
-		{ 0,  2,  4,  5 },  { 0,  2,  4,  6 },  { 0,  2,  4,  6 },  { 0,  2,  5,  7 },
-		{ 0,  2,  5,  8 },  { 0,  3,  6,  8 },  { 0,  3,  6,  9 },  { 0,  3,  7, 10 },
-		{ 0,  4,  8, 11 },  { 0,  4,  8, 12 },  { 0,  4,  9, 13 },  { 0,  5, 10, 14 },
-		{ 0,  5, 11, 16 },  { 0,  6, 12, 17 },  { 0,  6, 13, 19 },  { 0,  7, 14, 20 },
-		{ 0,  8, 16, 22 },  { 0,  8, 16, 22 },  { 0,  8, 16, 22 },  { 0,  8, 16, 22 }
+        { 0,  0,  1,  2 },  { 0,  0,  1,  2 },  { 0,  0,  1,  2 },  { 0,  0,  1,  2 },
+        { 0,  1,  2,  2 },  { 0,  1,  2,  3 },  { 0,  1,  2,  3 },  { 0,  1,  2,  3 },
+        { 0,  1,  2,  4 },  { 0,  1,  3,  4 },  { 0,  1,  3,  4 },  { 0,  1,  3,  5 },
+        { 0,  2,  4,  5 },  { 0,  2,  4,  6 },  { 0,  2,  4,  6 },  { 0,  2,  5,  7 },
+        { 0,  2,  5,  8 },  { 0,  3,  6,  8 },  { 0,  3,  6,  9 },  { 0,  3,  7, 10 },
+        { 0,  4,  8, 11 },  { 0,  4,  8, 12 },  { 0,  4,  9, 13 },  { 0,  5, 10, 14 },
+        { 0,  5, 11, 16 },  { 0,  6, 12, 17 },  { 0,  6, 13, 19 },  { 0,  7, 14, 20 },
+        { 0,  8, 16, 22 },  { 0,  8, 16, 22 },  { 0,  8, 16, 22 },  { 0,  8, 16, 22 }
         // clang-format on
     };
     int32_t result = s_detune_adjustment[keycode][detune & 3];
@@ -393,35 +355,6 @@ static inline uint8_t compute_eg_rate(uint8_t op_data[], uint16_t ch_freq, enum 
     return (uint8_t)rate;
 }
 
-#if SGU_EG_DEBUG
-static void eg_debug_params(struct SGU *sgu, uint8_t ch, uint8_t op, uint8_t op_data[], uint16_t ch_freq)
-{
-    if (ch != 0 || op != 0)
-        return;
-    uint32_t keycode = keycode_from_freq16_32(ch_freq);
-    uint32_t ksrval = keycode >> (SGU_OP0_KSR(op_data[0]) ^ 3);
-    uint32_t ar = SGU_OP27_AR(op_data[2], op_data[7]);
-    uint32_t dr = SGU_OP27_DR(op_data[2], op_data[7]);
-    uint32_t sl = SGU_OP3_SL(op_data[3]);
-    uint32_t sr = SGU_OP4_SR(op_data[4]);
-    uint32_t rr = SGU_OP3_RR(op_data[3]);
-    uint32_t sus_scaled = compute_eg_sustain(op_data);
-    uint32_t rate_a = compute_eg_rate(op_data, ch_freq, SGU_EG_ATTACK);
-    uint32_t rate_d = compute_eg_rate(op_data, ch_freq, SGU_EG_DECAY);
-    uint32_t rate_s = compute_eg_rate(op_data, ch_freq, SGU_EG_SUSTAIN);
-    uint32_t rate_r = compute_eg_rate(op_data, ch_freq, SGU_EG_RELEASE);
-    double ms = (double)sgu->sample_counter * 1000.0 / (double)SGU_CHIP_CLOCK;
-
-    printf("SGU EG ch%u op%u regs: r0=%02X r1=%02X r2=%02X r3=%02X r4=%02X r5=%02X r6=%02X r7=%02X\n",
-           ch, op,
-           op_data[0], op_data[1], op_data[2], op_data[3],
-           op_data[4], op_data[5], op_data[6], op_data[7]);
-    printf("SGU EG ch%u op%u freq16=%u keycode=%u ksr=%u AR=%u DR=%u SL=%u SR=%u RR=%u sus=%u rateA=%u rateD=%u rateS=%u rateR=%u at %.2f ms\n",
-           ch, op, ch_freq, keycode, ksrval, ar, dr, sl, sr, rr, sus_scaled,
-           rate_a, rate_d, rate_s, rate_r, ms);
-}
-#endif
-
 //-------------------------------------------------
 //  clock_lfo - clock the global LFO for AM and PM
 //  Called once per sample (global state)
@@ -458,16 +391,12 @@ static inline int32_t clock_lfo(uint16_t *lfo_am_counter, uint16_t *lfo_pm_count
 //  when a keyon happens or when an SSG-EG cycle
 //  is complete and restarts
 //-------------------------------------------------
-static inline void start_attack(struct sgu_ch_state *self, uint8_t op, uint8_t op_data[], uint16_t ch_freq, bool is_restart /*= false*/)
+static inline void start_attack(struct sgu_ch_state *self, uint8_t op, uint8_t op_data[], uint16_t ch_freq)
 {
     // don't change anything if already in attack state
     if (self->envelope_state[op] == SGU_EG_ATTACK)
         return;
     self->envelope_state[op] = SGU_EG_ATTACK;
-
-    // reset the phase when we start an attack due to a key on
-    if (!is_restart)
-        self->phase[op] = 0;
 
     // if the attack rate >= 62 then immediately go to max attenuation
     if (compute_eg_rate(op_data, ch_freq, SGU_EG_ATTACK) >= 62)
@@ -483,23 +412,27 @@ static inline void start_release(struct sgu_ch_state *self, uint8_t op)
     // don't change anything if already in release state
     if (self->envelope_state[op] >= SGU_EG_RELEASE)
         return;
-#if SGU_EG_DEBUG
-    printf("SGU EG op%u start_release: attenuation=%u (0x%03X)\n",
-           op, self->envelope_attenuation[op], self->envelope_attenuation[op]);
-#endif
     self->envelope_state[op] = SGU_EG_RELEASE;
 }
+
+static inline void phase_reset(struct sgu_ch_state *self, uint8_t ch, uint8_t op) {
+    self->phase[op] = 0;
+    self->prev_phase[op] = 0;
+    self->phase_wrap[op] = false;
+    // initialize per-operator noise LFSR with unique seed per channel/operator
+    self->lfsr_state[op] = 0x1FFFFF ^ ((uint32_t)(ch * SGU_OP_PER_CH + op) << 8);
+}
+
 
 //-------------------------------------------------
 //  reset - reset the channel state
 //-------------------------------------------------
-static void fm_channel_reset(struct sgu_ch_state *self, size_t ch_idx)
+static void fm_channel_reset(struct sgu_ch_state *self, uint8_t ch)
 {
     // reset our data
     for (uint8_t op = 0; op < SGU_OP_PER_CH; op++)
     {
-        self->phase[op] = 0;
-        self->prev_phase[op] = 0;
+        phase_reset(self, ch, op);
         self->envelope_attenuation[op] = 0x3ff;
         self->envelope_state[op] = SGU_EG_RELEASE;
         self->key_state[op] = false;
@@ -507,14 +440,6 @@ static void fm_channel_reset(struct sgu_ch_state *self, size_t ch_idx)
         self->keyon_gate[op] = false;
         self->eg_delay_run[op] = false;
         self->eg_delay_counter[op] = 0;
-        self->phase_wrap[op] = false;
-        self->lfsr_step[op] = 0;
-        // initialize per-operator noise LFSR with unique seed per channel/operator
-        self->noise_lfsr[op] = 0x1FFFFF ^ ((uint32_t)(ch_idx * SGU_OP_PER_CH + op) << 8);
-#if SGU_EG_DEBUG
-        self->eg_last_transition[op] = 0;
-        self->eg_last_state[op] = SGU_EG_RELEASE;
-#endif
     }
 }
 
@@ -705,7 +630,9 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
 
     // clock the global LFO (once per sample)
     int32_t lfo_raw_pm = clock_lfo(
-        &sgu->m_lfo_am_counter, &sgu->m_lfo_pm_counter, &sgu->m_lfo_am);
+        &sgu->lfo_am_counter, 
+        &sgu->lfo_pm_counter, 
+        &sgu->lfo_am);
 
     // now update the state of all the channels and operators
     for (uint8_t ch = 0; ch < SGU_CHNS; ch++)
@@ -721,10 +648,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
             ch_sample = (int16_t)sgu->pcm[sgu->chan[ch].pcmpos] << 6;
 
             // PCM phase accumulator. When it crosses 0x8000, advance sample position by 1.
-            if (sgu->chan[ch].freq > 0x8000)
-                sgu->pcm_phase_accum[ch] += 0x8000;
-            else
-                sgu->pcm_phase_accum[ch] += sgu->chan[ch].freq;
+            sgu->pcm_phase_accum[ch] += minval(sgu->chan[ch].freq, 0x8000);
 
             if (sgu->pcm_phase_accum[ch] >= 0x8000)
             {
@@ -781,9 +705,6 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                                 && (!ch_state->eg_delay_run[op]
                                     || ch_state->eg_delay_counter[op] >= delay_target);
                 ch_state->keyon_gate[op] = key_live;
-#if SGU_EG_DEBUG
-                enum envelope_state prev_state = ch_state->envelope_state[op];
-#endif
 
                 // has the key changed?
                 if ((keystate ^ ch_state->key_state[op]) != 0)
@@ -792,59 +713,77 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
 
                     // if the key has turned on, start the attack
                     if (keystate != 0)
-                        start_attack(ch_state, op, (uint8_t *)op_data, ch_freq, false);
+                        start_attack(ch_state, op, (uint8_t *)op_data, ch_freq);
                     // otherwise, start the release
                     else
                         start_release(ch_state, op);
-#if SGU_EG_DEBUG
-                    eg_debug_key(sgu, ch, op, keystate);
-                    if (keystate)
-                        eg_debug_params(sgu, ch, op, op_data, ch_freq);
-#endif
                 }
 
-#if SGU_EG_DEBUG
-                if (ch_state->envelope_state[op] != prev_state)
-                    eg_debug_transition(sgu, ch, op, prev_state, ch_state->envelope_state[op]);
-                prev_state = ch_state->envelope_state[op];
-#endif
+                // save previous phase for noise boundary detection
+                const uint32_t phase_before = ch_state->phase[op];
 
                 // clock the envelope (only on envelope ticks)
                 if (bitfield(sgu->envelope_counter, 0, 2) == 0)
                     clock_envelope(ch_state, op, op_data, ch_freq, sgu->envelope_counter >> 2);
 
-#if SGU_EG_DEBUG
-                if (ch_state->envelope_state[op] != prev_state)
-                    eg_debug_transition(sgu, ch, op, prev_state, ch_state->envelope_state[op]);
-#endif
-
                 // handle phase reset due to SYNC (previous op wrap from last sample)
                 const uint8_t prev_op = op ? (uint8_t)(op - 1) : (uint8_t)(SGU_OP_PER_CH - 1);
                 const bool sync_reset = (SGU_OP6_SYNC(op_data[6]) && ch_state->phase_wrap[prev_op]);
-                if (sync_reset)
-                    ch_state->phase[op] = 0;
+                if (sync_reset) {
+                    phase_reset(ch_state, ch, op);
+                } else {
+                    // clock the phase (apply per-operator PM depth)
+                    int32_t op_lfo_pm = lfo_raw_pm;
+                    if (!SGU_OP6_VIBD(op_data[6]))
+                        op_lfo_pm >>= 1;
 
-                // save previous phase for noise boundary detection
-                const uint32_t phase_before = ch_state->phase[op];
-                ch_state->prev_phase[op] = phase_before;
+                    clock_phase(ch_state, op, op_data, ch_freq,
+                                SGU_OP0_VIB(op_data[0]) ? op_lfo_pm : 0);
+                }
 
-                // clock the phase (apply per-operator PM depth)
-                int32_t op_lfo_pm = lfo_raw_pm;
-                if (!SGU_OP6_VIBD(op_data[6]))
-                    op_lfo_pm >>= 1;
-
-                clock_phase(ch_state, op, op_data, ch_freq,
-                            SGU_OP0_VIB(op_data[0]) ? op_lfo_pm : 0);
-
-                // record wrap for next sample's SYNC
+                // record wrap for next operator's SYNC
                 ch_state->phase_wrap[op] = (ch_state->phase[op] < phase_before);
 
+                // compute LFSR state 6x per operator cycle (only for noise waveforms)
+                uint8_t wave = SGU_OP7_WAVE(op_data[7]);
+                if (wave == SGU_WAVE_NOISE || wave == SGU_WAVE_PERIODIC_NOISE) {
+                    // NOTE: This is a 6-bit LFSR, thus it takes 6 shift cycles to complete a full period.
+                    // So if we take 6 times per cycle, the LFSR repeating output frequency matches the
+                    // operator frequency.
+                    if (((ch_state->phase[op] >> 8) * 6 >> 24) != ((phase_before >> 8) * 6 >> 24)) {
+                        uint32_t *lfsr = &ch_state->lfsr_state[op];
+                        if (wave == SGU_WAVE_NOISE) {
+                            *lfsr=(*lfsr>>1|(((*lfsr) ^ (*lfsr >> 2) ^ (*lfsr >> 3) ^ (*lfsr >> 5) ) & 1)<<31);
+                        } else {
+                            switch (SGU_OP5_WPAR(op_data[5])&3) {
+                                case SGU_LFSR_TAP34:
+                                    *lfsr=(*lfsr>>1|(((*lfsr >> 3) ^ (*lfsr >> 4) ) & 1)<<5);
+                                    break;
+                                case SGU_LFSR_TAP23:
+                                    *lfsr=(*lfsr>>1|(((*lfsr >> 2) ^ (*lfsr >> 3) ) & 1)<<5);
+                                    break;
+                                case SGU_LFSR_TAP023:
+                                    *lfsr=(*lfsr>>1|(((*lfsr) ^ (*lfsr >> 2) ^ (*lfsr >> 3) ) & 1)<<5);
+                                    break;
+                                case SGU_LFSR_TAP0235:
+                                    *lfsr=(*lfsr>>1|(((*lfsr) ^ (*lfsr >> 2) ^ (*lfsr >> 3) ^ (*lfsr >> 5) ) & 1)<<5);
+                                    break;
+                            }
+                            if ((*lfsr & 0x3F)==0 || (~*lfsr & 0x3F)==0) {
+                                *lfsr=0x2A;
+                            }
+                        }
+                    }
+                }
+
                 // generate the FM sample for this channel
-                // Feedback: >> 1 to average two samples, >> 1 to prevent runaway (ESFM design).
-                // ESFM uses 13-bit samples and >> (7 - mod); SGU uses 14-bit, thus >> (8 - mod).
+
+                // get the phase modulation input
                 const uint8_t mod = SGU_OP6_MOD(op_data[6]);
+                // Feedback: >> 1 to average two samples, >> 1 to prevent runaway (ESFM design).
                 const int16_t in_val = op ? ch_state->value[op - 1]
                                 : (ch_state->op0_fb + ch_state->value[0]) >> (1 + 1);
+                // ESFM uses 13-bit samples and >> (7 - mod); SGU uses 14-bit, thus >> (8 - mod).
                 const int16_t p_mod = (mod == 0)
                                 ? 0
                                 : (in_val >> (8 - mod));
@@ -862,16 +801,16 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                 //-------------------------------------------------
                 int32_t val = 0;
 
-
                 // skip work if the envelope is effectively off
                 if (ch_state->envelope_attenuation[op] < EG_QUIET)
                 {
                     // scale down to 10-bit phase for waveform lookup
-                    int16_t phase = (ch_state->phase[op] >> 22) + p_mod;
+                    // Round instead of truncate to reduce phase drift artifacts
+                    int16_t phase = ((ch_state->phase[op] + (1 << 21)) >> 22) + p_mod;
 
                     int16_t sample = 0;
 
-                    switch (SGU_OP7_WAVE(op_data[7]))
+                    switch (wave)
                     {
                     case SGU_WAVE_SINE:
                     {
@@ -970,75 +909,9 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     }
                     break;
                     case SGU_WAVE_NOISE:
-                    {
-                        // White noise: clock 32-bit LFSR on phase bit 27 rising edges (SID-compatible)
-                        // SID clocks noise when bit 19 of 24-bit accumulator goes 0→1
-                        // SGU's 32-bit phase is scaled by 256 from SID's 24-bit, so bit 19→bit 27
-                        // Uses su.c convention: 32-bit LFSR with taps (0,2,3,5) feedback to bit 31
-                        // Noise rate = freq16 * Fclk / 2^20 ≈ freq16 * 0.9537 Hz for 1MHz SID clock
-                        // Count transitions to avoid aliasing at high frequencies (phase_step > 2^27)
-                        uint32_t transitions = ((ch_state->phase[op] >> 28) - (ch_state->prev_phase[op] >> 28)) & 0xF;
-                        uint32_t lfsr = ch_state->noise_lfsr[op];
-                        while (transitions--)
-                        {
-                            // 32-bit LFSR with taps (0,2,3,5) folded into MSB feedback (su.c style)
-                            lfsr = (lfsr >> 1) | ((((lfsr) ^ (lfsr >> 2) ^ (lfsr >> 3) ^ (lfsr >> 5)) & 1) << 31);
-                        }
-                        ch_state->noise_lfsr[op] = lfsr;
-                        // Bipolar output spanning full INT16 range
-                        sample = (ch_state->noise_lfsr[op] & 1) ? 32767 : -32768;
-                    }
-                    break;
                     case SGU_WAVE_PERIODIC_NOISE:
-                    {
-                        // Periodic noise: POKEY-style free-running LFSRs with sample-and-hold
-                        // WPAR[3:0] enables LFSR stages, longer LFSRs XOR-gate the shortest
-                        uint32_t phase = ch_state->phase[op];
-                        const uint32_t prev_phase = ch_state->prev_phase[op];
-
-                        // Detect phase wrap (MSB 1→0) and mid-cycle (MSB 0→1)
-                        // Stepping on both edges doubles the LFSR clock rate
-                        bool phase_wrapped = (prev_phase & 0x80000000) && !(phase & 0x80000000);
-                        bool mid_cycle = !(prev_phase & 0x80000000) && (phase & 0x80000000);
-
-                        // All LFSRs free-run: advance step on both MSB transitions
-                        if (phase_wrapped || mid_cycle) {
-                            ch_state->lfsr_step[op]++;
-                        }
-
-                        uint8_t lfsr_sel = wpar & 0x0F;
-                        if (!lfsr_sel)
-                            break;
-
-                        const uint8_t *tables[4] = {sgu->lfsr_4bit, sgu->lfsr_5bit, sgu->lfsr_6bit, sgu->lfsr_9bit};
-                        const uint32_t periods[4] = {15, 31, 63, 511};
-
-                        // Find output LFSR (shortest) and compute XOR gate from longer ones
-                        int out_idx = -1;
-                        uint8_t gate = 0;
-                        uint32_t step = ch_state->lfsr_step[op];
-
-                        for (int i = 0; i < 4; i++) {
-                            if (!(lfsr_sel & (1 << i)))
-                                continue;
-
-                            if (out_idx < 0) {
-                                out_idx = i;  // shortest selected = output
-                            } else {
-                                // Longer LFSRs XOR into gate
-                                gate ^= tables[i][step % periods[i]];
-                            }
-                        }
-
-                        // Sample-and-hold: update output only when gate=1 (or no gating)
-                        bool has_gating = (lfsr_sel & ~((1 << (out_idx + 1)) - 1)) != 0;
-                        if (!has_gating || gate) {
-                            uint8_t bit = tables[out_idx][step % periods[out_idx]];
-                            ch_state->noise_out[op] = bit ? 32767 : -32768;
-                        }
-                        // Output held value
-                        sample = ch_state->noise_out[op];
-                    }
+                        // Bipolar output spanning full INT16 range
+                        sample = (ch_state->lfsr_state[op] & 1) ? 32767 : -32768;
                     break;
                     }
 
@@ -1060,7 +933,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     // add in LFO AM modulation (apply per-operator AM depth)
                     if (SGU_OP0_TRM(op_data[0]))
                     {
-                        uint32_t am_offset = sgu->m_lfo_am;
+                        uint32_t am_offset = sgu->lfo_am;
                         if (!SGU_OP6_TRMD(op_data[6]))
                             am_offset >>= 2;
                         env_att += am_offset;
@@ -1338,9 +1211,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
             // Reset all operator phases for this channel
             for (uint8_t op = 0; op < SGU_OP_PER_CH; op++)
             {
-                ch_state->phase[op] = 0;
-                ch_state->prev_phase[op] = 0;
-                ch_state->lfsr_step[op] = 0;
+                phase_reset(ch_state, ch, op);
             }
             sgu->phase_reset_countdown[ch] = sgu->chan[ch].restimer; // preload timer sync counter
             sgu->chan[ch].flags1 &= ~SGU1_FLAGS1_PHASE_RESET;        // clear request
@@ -1362,9 +1233,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                 // Reset all operator phases
                 for (uint8_t op = 0; op < SGU_OP_PER_CH; op++)
                 {
-                    ch_state->phase[op] = 0;
-                    ch_state->noise_lfsr[op] = 0x1FFFFF; // reset noise seed
-                    ch_state->lfsr_step[op] = 0;
+                    phase_reset(ch_state, ch, op);
                 }
             }
         }
@@ -1422,48 +1291,6 @@ void SGU_Init(struct SGU *sgu, size_t sampleMemSize)
         sgu->waveform_lut[i] = (int16_t)sin_val;
     }
 
-    // Build LFSR tables for periodic noise (loop-free table lookup)
-    // 4-bit LFSR: taps 2,3 (period 15) - POKEY POLY4
-    {
-        uint32_t lfsr = 0x0A;
-        for (int i = 0; i < 15; i++)
-        {
-            sgu->lfsr_4bit[i] = lfsr & 1;
-            uint32_t c = ((lfsr >> 2) ^ (lfsr >> 3)) & 1;
-            lfsr = ((lfsr >> 1) | (c << 3)) & 0x0F;
-        }
-    }
-    // 5-bit LFSR: taps 2,4 (period 31) - POKEY POLY5
-    {
-        uint32_t lfsr = 0x1F;
-        for (int i = 0; i < 31; i++)
-        {
-            sgu->lfsr_5bit[i] = lfsr & 1;
-            uint32_t c = ((lfsr >> 2) ^ (lfsr >> 4)) & 1;
-            lfsr = ((lfsr >> 1) | (c << 4)) & 0x1F;
-        }
-    }
-    // 6-bit LFSR: taps 4,5 (period 63) - SU type
-    {
-        uint32_t lfsr = 0x3F;
-        for (int i = 0; i < 63; i++)
-        {
-            sgu->lfsr_6bit[i] = lfsr & 1;
-            uint32_t c = ((lfsr >> 4) ^ (lfsr >> 5)) & 1;
-            lfsr = ((lfsr >> 1) | (c << 5)) & 0x3F;
-        }
-    }
-    // 9-bit LFSR: taps 3,8 (period 511) - POKEY POLY9
-    {
-        uint32_t lfsr = 0x1FF;
-        for (int i = 0; i < 511; i++)
-        {
-            sgu->lfsr_9bit[i] = lfsr & 1;
-            uint32_t c = ((lfsr >> 3) ^ (lfsr >> 8)) & 1;
-            lfsr = ((lfsr >> 1) | (c << 8)) & 0x1FF;
-        }
-    }
-
     // Build pan gain lookup tables (same as su.c)
     // Start with "center pan": both gains 127
     for (size_t i = 0; i < 256; i++)
@@ -1489,9 +1316,9 @@ void SGU_Reset(struct SGU *sgu)
 
     sgu->sample_counter = 0;
     sgu->envelope_counter = 0;
-    sgu->m_lfo_am_counter = 0;
-    sgu->m_lfo_pm_counter = 0;
-    sgu->m_lfo_am = 0;
+    sgu->lfo_am_counter = 0;
+    sgu->lfo_pm_counter = 0;
+    sgu->lfo_am = 0;
 
     for (size_t ch = 0; ch < SGU_CHNS; ch++)
     {
@@ -1516,7 +1343,7 @@ void SGU_Reset(struct SGU *sgu)
         sgu->outR[ch] = 0;
     }
 
-#if SGU_EG_DEBUG
+#if IN_EMU
     uint8_t AR5 = 4;
     uint8_t DR5 = 31;
     uint8_t SL4 = 12;

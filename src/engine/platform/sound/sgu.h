@@ -23,10 +23,6 @@
 
 #pragma once
 
-#ifndef SGU_EG_DEBUG
-#define SGU_EG_DEBUG 0
-#endif
-
 /**
  * SGU-1 - Sound Generator Unit 1
  *
@@ -396,13 +392,13 @@ typedef enum : uint8_t
     SGU_WAVE_XOR_TRIANGLE = 7, // reserved (unimplemented)
 } sgu_waveform_t;
 
-// WPAR[3:0] bitmap enables LFSR stages for PERIODIC_NOISE
-// Multiple bits: shorter LFSRs gate (clock-enable) longer ones
-// Example: 0b1010 = 5-bit gates 9-bit (POKEY-style)
-#define SGU_LFSR_4BIT   0x01  // enable 4-bit (15 states) - POKEY POLY4
-#define SGU_LFSR_5BIT   0x02  // enable 5-bit (31 states) - POKEY POLY5
-#define SGU_LFSR_6BIT   0x04  // enable 6-bit (63 states) - maximal length
-#define SGU_LFSR_9BIT   0x08  // enable 9-bit (511 states) - POKEY POLY9
+// WPAR[1:0] selects 6-bit LFSR tap configuration for PERIODIC_NOISE
+typedef enum : uint8_t {
+    SGU_LFSR_TAP34   = 0,  // taps 3,4 (XOR) - simple periodic
+    SGU_LFSR_TAP23   = 1,  // taps 2,3 (XOR) - simple periodic
+    SGU_LFSR_TAP023  = 2,  // taps 0,2,3 (XOR) - intermediate
+    SGU_LFSR_TAP0235 = 3,  // taps 0,2,3,5 (XOR) - most complex/noisy
+} sgu_lfsr_t;
 
 // Envelope states
 enum envelope_state : uint8_t
@@ -547,9 +543,9 @@ struct SGU
     uint32_t envelope_counter; // envelope counter; low 2 bits are sub-counter
 
     // internal state - global LFO
-    uint16_t m_lfo_am_counter; // LFO AM counter
-    uint16_t m_lfo_pm_counter; // LFO PM counter
-    uint8_t m_lfo_am;          // current LFO AM value
+    uint16_t lfo_am_counter; // LFO AM counter
+    uint16_t lfo_pm_counter; // LFO PM counter
+    uint8_t lfo_am;          // current LFO AM value
 
     // channels internal state
     struct sgu_ch_state
@@ -560,31 +556,17 @@ struct SGU
         int16_t value[SGU_OP_PER_CH];                      // current output value
         uint16_t envelope_attenuation[SGU_OP_PER_CH];      // computed envelope attenuation (4.6 format)
         enum envelope_state envelope_state[SGU_OP_PER_CH]; // current envelope state
-        uint32_t noise_lfsr[SGU_OP_PER_CH];                // per-operator noise LFSR state
-        int16_t noise_out[SGU_OP_PER_CH];                  // per-operator noise S&H output
-        uint32_t gated_phase[SGU_OP_PER_CH];               // gated phase for chained LFSR
-        uint32_t lfsr_step[SGU_OP_PER_CH];                 // discrete LFSR step counter for PERIODIC_NOISE
+        uint32_t lfsr_state[SGU_OP_PER_CH];                // per-operator noise LFSR state
         bool phase_wrap[SGU_OP_PER_CH];                    // phase wrap flag for current sample (for SYNC)
         bool key_state[SGU_OP_PER_CH];                     // current key state: on or off
         bool keyon_live[SGU_OP_PER_CH];                    // live key on state
         bool keyon_gate[SGU_OP_PER_CH];                    // last raw key state (edge detect for delay)
         bool eg_delay_run[SGU_OP_PER_CH];                  // envelope delay active
         uint16_t eg_delay_counter[SGU_OP_PER_CH];          // delay counter (samples)
-#if SGU_EG_DEBUG
-        uint32_t eg_last_transition[SGU_OP_PER_CH];       // sample index of last state transition
-        enum envelope_state eg_last_state[SGU_OP_PER_CH]; // last logged state
-#endif
     } m_channel[SGU_CHNS];
 
     // precomputed waveforms (1024 samples each)
     int16_t waveform_lut[SGU_WAVEFORM_LENGTH / 2];
-
-    // Precomputed LFSR tables for loop-free periodic noise generation
-    // POKEY-compatible tap configurations
-    uint8_t lfsr_4bit[15];    // 4-bit LFSR (taps 2,3) - POKEY POLY4
-    uint8_t lfsr_5bit[31];    // 5-bit LFSR (taps 2,4) - POKEY POLY5
-    uint8_t lfsr_6bit[63];    // 6-bit LFSR (taps 4,5) - SU like
-    uint8_t lfsr_9bit[511];   // 9-bit LFSR (taps 3,8) - POKEY POLY9
 
     // src[i] = raw oscillator sample for channel i (16-bit, used for ring mod).
     // post[i] = processed sample after volume/filter (higher precision int32).
