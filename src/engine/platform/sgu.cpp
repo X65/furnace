@@ -419,18 +419,16 @@ void DivPlatformSGU::tick(bool sysTick) {
           chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,
           chan[i].fixedArp, false, 2, chan[i].pitch2, chipClock, CHIP_FREQBASE);
 
-      // POKEY frequency compensation - match POKEY's poly counter period effects
-      // POKEY divides freq by different amounts based on wave mode:
-      // - Default: /4, WAVE=6: /10 (2.5x higher pitch), WAVE=7: /30 (7.5x higher pitch)
-      // SGU uses direct frequency, so multiply to match POKEY's pitch ratios
+      // POKEY frequency scaling (from pokey.cpp lines 191-207)
+      // Furnace scales POKEY period to make buzz waves brighter/more musical
       if (ins->type==DIV_INS_POKEY) {
         unsigned char waveIdx=chan[i].std.wave.val&7;
         switch (waveIdx) {
           case 6:
-            chan[i].freq=chan[i].freq*5/2;  // 2.5x for POLY5|POLY4
+            chan[i].freq=chan[i].freq*10/4;  // ratio: 10/4 = 2.5x
             break;
           case 7:
-            chan[i].freq=chan[i].freq*15/2;  // 7.5x for pure tone (POKEY quirk)
+            chan[i].freq=chan[i].freq*30/4;  // ratio: 30/4 = 7.5x
             break;
         }
       }

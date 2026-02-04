@@ -996,11 +996,13 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                         uint32_t phase = ch_state->phase[op];
                         const uint32_t prev_phase = ch_state->prev_phase[op];
 
-                        // Detect phase wrap (MSB transition 1→0 indicates full cycle)
+                        // Detect phase wrap (MSB 1→0) and mid-cycle (MSB 0→1)
+                        // Stepping on both edges doubles the LFSR clock rate
                         bool phase_wrapped = (prev_phase & 0x80000000) && !(phase & 0x80000000);
+                        bool mid_cycle = !(prev_phase & 0x80000000) && (phase & 0x80000000);
 
-                        // All LFSRs free-run: always advance step on phase wrap
-                        if (phase_wrapped) {
+                        // All LFSRs free-run: advance step on both MSB transitions
+                        if (phase_wrapped || mid_cycle) {
                             ch_state->lfsr_step[op]++;
                         }
 
