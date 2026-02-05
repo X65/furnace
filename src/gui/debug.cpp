@@ -575,7 +575,7 @@ void putDispatchChip(void* data, int type) {
       ImGui::Text("* Sample RAM:");
       ImGui::Text(" - used: %d",(int)ch->chip.pcm_size);
       ImGui::Text(" - capacity: %d",(int)SGU_PCM_RAM_SIZE);
-      // ImGui::Text(" - entries: %d",(int)ch->memCompo.entries.size());
+      ImGui::Text(" - entries: %d",(int)ch->memCompo.entries.size());
       ImGui::Text("* Write queue:");
       ImGui::Text(" - pending: %d",(int)ch->writes.size());
       ImGui::Text(" - capacity: %d",(int)ch->writes.capacity());

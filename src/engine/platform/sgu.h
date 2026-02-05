@@ -93,9 +93,9 @@ class DivPlatformSGU: public DivDispatch {
   SGU chip;
   short oldOut[2];
 
-  unsigned int* sampleOffSU;
+  // Sample memory tracking (from SoundUnit)
+  unsigned int* sampleOffSGU;
   bool* sampleLoaded;
-
   int sysIDCache;
   DivMemoryComposition memCompo;
 
@@ -120,6 +120,9 @@ class DivPlatformSGU: public DivDispatch {
     void reset();
     void forceIns();
     int getOutputCount();
+    int mapVelocity(int ch, float vel);
+    void* getChanState(int chan);
+    unsigned short getPan(int ch);
     void setFlags(const DivConfig& flags);
     void poke(unsigned int addr, unsigned short val);
     void poke(std::vector<DivRegWrite>& wlist);
@@ -128,6 +131,7 @@ class DivPlatformSGU: public DivDispatch {
     DivDispatchOscBuffer* getOscBuffer(int chan);
     unsigned char* getRegisterPool();
     int getRegisterPoolSize();
+    void toggleRegisterDump(bool enable);
     bool getLegacyAlwaysSetVolume();
     void notifyInsChange(int ins);
     void notifyInsDeletion(void* ins);
