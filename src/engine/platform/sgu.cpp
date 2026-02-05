@@ -130,7 +130,7 @@ static const unsigned char suToSguWaveformMap[8]={
 static const unsigned char pokeyToSguWpar[8]={
   SGU_LFSR_TAP023,   // 0 $00: POLY5 gated by POLY17/9 - intermediate complexity
   SGU_LFSR_TAP23,    // 1 $20: POLY5 only - simple periodic
-  SGU_LFSR_TAP34,    // 2 $40: POLY4 gated by POLY5 - buzz
+  SGU_LFSR_TAP0235,  // 2 $40: POLY4 gated by POLY5 - buzz
   SGU_LFSR_TAP23,    // 3 $60: POLY5 only (same as 1)
   SGU_LFSR_TAP0235,  // 4 $80: POLY17/9 only - most like white noise
   0,                 // 5 $A0: no poly (pure tone) -> PULSE
@@ -262,12 +262,16 @@ void DivPlatformSGU::tick(bool sysTick) {
         // POKEY uses polynomial noise - map to SGU LFSR modes
         unsigned char waveIdx=chan[i].std.wave.val&7;
         chan[i].wpar[3]=pokeyToSguWpar[waveIdx];
-        // WPAR=0 means "no poly" (pure tone) - use PULSE with 50% duty
-        if (chan[i].wpar[3]==0) {
+        if (waveIdx==5) {
+          // WAVE 5: pure tone -> PULSE with 50% duty
           chan[i].state.fm.op[3].ws=SGU_WAVE_PULSE;
           chan[i].duty=0x3F;
           chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+        } else if (waveIdx==0 || waveIdx==4) {
+          // WAVE 0/4: white noise (POLY17/9) -> 32-bit LFSR noise
+          chan[i].state.fm.op[3].ws=SGU_WAVE_NOISE;
         } else {
+          // WAVE 1,2,3,6,7: periodic buzz/noise -> 6-bit LFSR
           chan[i].state.fm.op[3].ws=SGU_WAVE_PERIODIC_NOISE;
         }
         applyOpRegs(i, 3, chan[i].state.fm.op[3], chan[i].state.esfm.op[3]);
@@ -433,14 +437,30 @@ void DivPlatformSGU::tick(bool sysTick) {
       // Furnace scales POKEY period to make buzz waves brighter/more musical
       if (ins->type==DIV_INS_POKEY) {
         unsigned char waveIdx=chan[i].std.wave.val&7;
-        switch (waveIdx) {
-          case 6:
-            chan[i].freq=chan[i].freq*10/4;  // ratio: 10/4 = 2.5x
-            break;
-          case 7:
-            chan[i].freq=chan[i].freq*30/4;  // ratio: 30/4 = 7.5x
-            break;
-        }
+        // switch (waveIdx) {
+        //   case 0:
+        //     chan[i].freq=(int)((float)chan[i].freq/5.5f);  // POLY5+POLY17/9: lower pitch
+        //     break;
+        //   case 1:
+        //     chan[i].freq=(int)((float)chan[i].freq/5.8f);  // POLY5 only: lower pitch
+        //     break;
+        //   case 2:
+        //     chan[i].freq=(int)((float)chan[i].freq/36.0f);  // POLY4+POLY5: lower pitch
+        //     break;
+        //   case 3:
+        //     chan[i].freq=(int)((float)chan[i].freq/5.6f);  // POLY5 only: 2 octaves lower
+        //     break;
+        //   case 4:
+        //     chan[i].freq=(int)((float)chan[i].freq/3.0f);  // POLY17/9 only: lower pitch
+        //     break;
+        //   case 6:
+        //     chan[i].freq=(int)((float)chan[i].freq/1.1f);  // ratio: 10/4 = 2.5x
+        //     break;
+        //   case 7:
+        //     // chan[i].freq=chan[i].freq*30/4;  // ratio: 30/4 = 7.5x
+        //     chan[i].freq=(int)((float)chan[i].freq/5.0f);
+        //     break;
+        // }
       }
 
       if (chan[i].pcm) {
@@ -1377,12 +1397,16 @@ int DivPlatformSGU::dispatch(DivCommand c) {
           // POKEY uses polynomial noise - map to SGU LFSR modes
           unsigned char waveIdx=c.value&7;
           chan[c.chan].wpar[3]=pokeyToSguWpar[waveIdx];
-          // WPAR=0 means "no poly" (pure tone) - use PULSE with 50% duty
-          if (chan[c.chan].wpar[3]==0) {
+          if (waveIdx==5) {
+            // WAVE 5: pure tone -> PULSE with 50% duty
             chan[c.chan].state.fm.op[3].ws=SGU_WAVE_PULSE;
             chan[c.chan].duty=0x3F;
             chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
+          } else if (waveIdx==0 || waveIdx==4) {
+            // WAVE 0/4: white noise (POLY17/9) -> 32-bit LFSR noise
+            chan[c.chan].state.fm.op[3].ws=SGU_WAVE_NOISE;
           } else {
+            // WAVE 1,2,3,6,7: periodic buzz/noise -> 6-bit LFSR
             chan[c.chan].state.fm.op[3].ws=SGU_WAVE_PERIODIC_NOISE;
           }
           applyOpRegs(c.chan, 3, chan[c.chan].state.fm.op[3], chan[c.chan].state.esfm.op[3]);
