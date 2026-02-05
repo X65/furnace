@@ -933,6 +933,18 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                         // Bipolar output spanning full INT16 range
                         sample = (ch_state->lfsr_state[op] & 1) ? 32767 : -32768;
                     break;
+                    case SGU_WAVE_SAMPLE:
+                    {
+                        // Sample-as-waveform mode: read 8-bit PCM sample from memory
+                        // Uses channel's pcmrst register as the base address for a 1024-sample waveform
+                        // Phase (0-1023) indexes into the sample region, looping naturally via phase wraparound
+                        uint32_t p = phase & 0x3FF;  // 10-bit phase index (0-1023)
+                        uint16_t sample_addr = (sgu->chan[ch].pcmrst + p) & (SGU_PCM_RAM_SIZE - 1);
+                        // Scale 8-bit signed sample to 16-bit to match other waveforms
+                        // (attenuation to 14-bit happens later at the envelope processing stage)
+                        sample = (int16_t)sgu->pcm[sample_addr] << 8;
+                    }
+                    break;
                     }
 
                     // Apply ring modulation if RING bit set (R6[4])

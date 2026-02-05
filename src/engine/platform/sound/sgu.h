@@ -389,7 +389,7 @@ typedef enum : uint8_t
     SGU_WAVE_NOISE = 4,
     SGU_WAVE_PERIODIC_NOISE = 5,
     SGU_WAVE_XOR_SINE = 6,     // reserved (unimplemented)
-    SGU_WAVE_XOR_TRIANGLE = 7, // reserved (unimplemented)
+    SGU_WAVE_SAMPLE = 7,       // sample from PCM memory as waveform
 } sgu_waveform_t;
 
 // WPAR[1:0] selects 6-bit LFSR tap configuration for PERIODIC_NOISE

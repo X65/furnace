@@ -122,7 +122,7 @@ static const unsigned char suToSguWaveformMap[8]={
   /* 4: NOISE          -> */ SGU_WAVE_NOISE,
   /* 5: PERIODIC_NOISE -> */ SGU_WAVE_PERIODIC_NOISE,
   /* 6: XOR_SINE       -> */ SGU_WAVE_SINE,
-  /* 7: XOR_TRIANGLE   -> */ SGU_WAVE_TRIANGLE,
+  /* 7: SAMPLE         -> */ SGU_WAVE_SAMPLE,
 };
 
 // POKEY waveform to SGU WPAR mapping
@@ -803,6 +803,16 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
   opWrite(ch, o, 0x05, reg5);
   opWrite(ch, o, 0x06, reg6);
   opWrite(ch, o, 0x07, reg7);
+
+  // Sample-as-waveform: set pcmrst to sample start address when waveform 7 is selected
+  if (wave == SGU_WAVE_SAMPLE) {
+    int sNum = chan[ch].sample;
+    if (sNum >= 0 && sNum < parent->song.sampleLen && sampleLoaded[sNum]) {
+      unsigned int sampleStart = sampleOffSGU[sNum];
+      chWrite(ch, SGU1_CHN_PCM_RST_L, sampleStart & 0xff);
+      chWrite(ch, SGU1_CHN_PCM_RST_H, sampleStart >> 8);
+    }
+  }
 
   // return;
   logD("SGU op ch=%d op=%d regs: %02X %02X %02X %02X %02X %02X %02X %02X (wave=%d op.ws=%d)",
