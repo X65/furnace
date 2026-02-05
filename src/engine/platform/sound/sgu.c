@@ -881,9 +881,9 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     case SGU_WAVE_SAWTOOTH:
                     {
                         // WPAR bit 0 selects rising/falling (invert when set)
-                        if (wpar & 0x01)
-                            phase = 1023 - phase;
-                        uint32_t p10 = phase & 0x3FF;
+                        bool inverted = (wpar & 0x01);
+                        int16_t phase_adj = inverted ? (int16_t)(1023 - phase) : phase;
+                        uint32_t p10 = phase_adj & 0x3FF;
                         // WPAR[2:1] quantizes phase by zeroing {0,4,6,8} LSBs
                         static const uint16_t qmask[4] = {
                             F16_QMASK(0),
@@ -895,6 +895,15 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                         // Sawtooth: linear ramp 0 → max → (wrap) min → 0, no mirroring needed
                         int32_t centered = (int32_t)(p10 ^ 0x200) - 0x200; // XOR swaps halves, subtract centers at 0
                         sample = (int16_t)(centered << 6);                 // scale to 16-bit range
+
+                        // BLEP for hard edge: detect dramatic sample change (|delta| > half range)
+                        int32_t delta = (int32_t)sample - (int32_t)ch_state->blep_prev_sample[op];
+                        if (delta > 32767 || delta < -32767)
+                        {
+                            ch_state->blep[op] = 1;
+                            ch_state->blep_frac[op] = (uint16_t)(ch_state->phase[op] >> 6);
+                        }
+                        ch_state->blep_prev_sample[op] = sample;
                     }
                     break;
                     case SGU_WAVE_PULSE:
@@ -906,6 +915,17 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                             duty = (uint8_t)((uint8_t)wpar << 4);
                         uint32_t p = phase & 0x3FF;
                         sample = ((p >> 3) >= duty) ? 32767 : -32768;
+
+                        // Detect edge by comparing with previous RAW sample (not enveloped value)
+                        if (sample != ch_state->blep_prev_sample[op])
+                        {
+                            ch_state->blep[op] = 1;  // Only 1 sample needs interpolation
+                            // Capture fractional phase (22 bits) as 16-bit for sub-sample position
+                            // High frac = crossed early in sample = more "new" value
+                            // Low frac = crossed late in sample = more "old" value
+                            ch_state->blep_frac[op] = (uint16_t)(ch_state->phase[op] >> 6);
+                            ch_state->blep_prev_sample[op] = sample;
+                        }
                     }
                     break;
                     case SGU_WAVE_NOISE:
@@ -969,13 +989,29 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                     // cache operator 0 output for delayed feedback on next sample
                     ch_state->op0_fb = ch_state->value[0];
                 }
+
+                // Store raw value for modulation (NO anti-aliasing - modulators need precise edges)
                 ch_state->value[op] = (int16_t)val;
 
                 const uint8_t out = SGU_OP7_OUT(op_data[7]);
+
                 if (out)
                 {
-                    // mix the operator to output
-                    ch_sample += val >> (7 - out);
+                    int32_t out_delta = val - ch_state->out[op];
+                    ch_state->out[op] = val;
+                    if (ch_state->blep[op] > 0)
+                    {
+                        // Sub-sample interpolation using fractional phase
+                        // frac indicates how far past the edge we are:
+                        //   high frac = crossed early = keep more of new value (less correction)
+                        //   low frac = crossed late = keep more of old value (more correction)
+                        uint16_t frac = ch_state->blep_frac[op];
+                        ch_state->out[op] -= ((int32_t)out_delta * (65536 - frac)) >> 16;
+                        ch_state->blep[op]--;
+                    }
+                    ch_sample += ch_state->out[op] >> (7 - out);
+                } else {
+                    ch_state->out[op] = 0;
                 }
             }
         }

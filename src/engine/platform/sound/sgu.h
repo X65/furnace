@@ -553,7 +553,8 @@ struct SGU
         int16_t op0_fb;                                    // feedback memory for first operator
         uint32_t phase[SGU_OP_PER_CH];                     // current phase value (10.22 format)
         uint32_t prev_phase[SGU_OP_PER_CH];                // previous phase value (for noise boundary detection)
-        int16_t value[SGU_OP_PER_CH];                      // current output value
+        int16_t value[SGU_OP_PER_CH];                      // current operator value
+        int16_t out[SGU_OP_PER_CH];                        // current output value
         uint16_t envelope_attenuation[SGU_OP_PER_CH];      // computed envelope attenuation (4.6 format)
         enum envelope_state envelope_state[SGU_OP_PER_CH]; // current envelope state
         uint32_t lfsr_state[SGU_OP_PER_CH];                // per-operator noise LFSR state
@@ -563,6 +564,9 @@ struct SGU
         bool keyon_gate[SGU_OP_PER_CH];                    // last raw key state (edge detect for delay)
         bool eg_delay_run[SGU_OP_PER_CH];                  // envelope delay active
         uint16_t eg_delay_counter[SGU_OP_PER_CH];          // delay counter (samples)
+        uint8_t blep[SGU_OP_PER_CH];                       // BLEP damping after dramatic phase changes
+        uint16_t blep_frac[SGU_OP_PER_CH];                 // fractional phase at edge (for sub-sample interpolation)
+        int16_t blep_prev_sample[SGU_OP_PER_CH];           // previous raw sample for edge detection
     } m_channel[SGU_CHNS];
 
     // precomputed waveforms (1024 samples each)
