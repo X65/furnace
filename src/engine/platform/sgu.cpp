@@ -276,9 +276,32 @@ void DivPlatformSGU::tick(bool sysTick) {
     }
 
     if (chan[i].std.duty.had) {
-      chan[i].duty=chan[i].std.duty.val;
-      chan[i].virtual_duty=(unsigned short)chan[i].duty<<5;
-      chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+      if (ins->type==DIV_INS_POKEY) {
+        // POKEY duty macro is AUDCTL register, not pulse duty
+        unsigned char audctl = chan[i].std.duty.val;
+        // Apply BP filter if filter bits (1 or 2) are set
+        if (audctl & 0x06) {
+          chan[i].control |= 10;  // Enable LP+BP filter
+          // Cutoff at 6th harmonic for organ-like tone
+          chan[i].cutoff = MIN((chan[i].baseFreq * 6) >> 4, 0x3fff);
+          chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+          chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
+          chan[i].res = 0;
+          chWrite(i,SGU1_CHN_RESON,chan[i].res);
+          writeControl(i);
+        } else if (chan[i].control & 10) {
+          // Filter bits cleared - disable LP+BP
+          chan[i].control &= ~10;
+          chan[i].res = 0;
+          chWrite(i,SGU1_CHN_RESON,chan[i].res);
+          writeControl(i);
+        }
+        // Bit 0 (15kHz mode) handled in frequency calculation
+      } else {
+        chan[i].duty=chan[i].std.duty.val;
+        chan[i].virtual_duty=(unsigned short)chan[i].duty<<5;
+        chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+      }
     }
     if (chan[i].std.wave.had) {
       // For SU/single-oscillator instruments, set waveform on output operator (op3)
@@ -352,9 +375,32 @@ void DivPlatformSGU::tick(bool sysTick) {
     }
 
     if (chan[i].std.duty.had) {
-      chan[i].duty=chan[i].std.duty.val;
-      chan[i].virtual_duty=(unsigned short)chan[i].duty<<5;
-      chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+      if (ins->type==DIV_INS_POKEY) {
+        // POKEY duty macro is AUDCTL register, not pulse duty
+        unsigned char audctl = chan[i].std.duty.val;
+        // Apply BP filter if filter bits (1 or 2) are set
+        if (audctl & 0x06) {
+          chan[i].control |= 10;  // Enable LP+BP filter
+          // Cutoff at 6th harmonic for organ-like tone
+          chan[i].cutoff = MIN((chan[i].baseFreq * 6) >> 4, 0x3fff);
+          chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+          chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
+          chan[i].res = 0;
+          chWrite(i,SGU1_CHN_RESON,chan[i].res);
+          writeControl(i);
+        } else if (chan[i].control & 10) {
+          // Filter bits cleared - disable LP+BP
+          chan[i].control &= ~10;
+          chan[i].res = 0;
+          chWrite(i,SGU1_CHN_RESON,chan[i].res);
+          writeControl(i);
+        }
+        // Bit 0 (15kHz mode) handled in frequency calculation
+      } else {
+        chan[i].duty=chan[i].std.duty.val;
+        chan[i].virtual_duty=(unsigned short)chan[i].duty<<5;
+        chWrite(i,SGU1_CHN_DUTY,chan[i].duty);
+      }
     }
 
     if (chan[i].std.ex1.had) {
@@ -475,13 +521,13 @@ void DivPlatformSGU::tick(bool sysTick) {
       // Furnace scales POKEY period to make buzz waves brighter/more musical
       if (ins->type==DIV_INS_POKEY) {
         unsigned char waveIdx=chan[i].std.wave.val&7;
-        logI("POKEY wave %d -> SGU WPAR %d", waveIdx, chan[i].wpar[3]);
+        // logI("POKEY wave %d -> SGU WPAR %d", waveIdx, chan[i].wpar[3]);
         switch (waveIdx) {
           case 0:
             chan[i].freq=(int)((float)chan[i].freq/5.5f);  // POLY5+POLY17/9: lower pitch
             break;
           case 1:
-            chan[i].freq=(int)((float)chan[i].freq/5.8f);  // POLY5 only: lower pitch
+            chan[i].freq=(int)((float)chan[i].freq/11.2f);  // POLY5 only: lower pitch
             break;
           case 2:
             chan[i].freq=(int)((float)chan[i].freq/36.0f);  // POLY4+POLY5: lower pitch
@@ -496,12 +542,22 @@ void DivPlatformSGU::tick(bool sysTick) {
             chan[i].freq=(int)((float)chan[i].freq/1.1f);  // ratio: 10/4 = 2.5x
             break;
           case 5:
-            chan[i].freq=(int)((float)chan[i].freq/2.0f);  // ratio: 10/4 = 2.5x
+            // chan[i].freq=(int)((float)chan[i].freq/2.0f);  // ratio: 10/4 = 2.5x
             break;
           case 7:
             // chan[i].freq=chan[i].freq*30/4;  // ratio: 30/4 = 7.5x
             chan[i].freq=(int)((float)chan[i].freq*1.15f);
             break;
+        }
+        // Apply AUDCTL bit 0: 15kHz clock mode (slower)
+        if (chan[i].std.duty.val & 0x01) {
+          chan[i].freq = chan[i].freq / 4;
+        }
+        // Update LP+BP filter cutoff to track 6th harmonic
+        if (chan[i].control & 10) {
+          chan[i].cutoff = MIN((chan[i].baseFreq * 6) >> 4, 0x3fff);
+          chWrite(i,SGU1_CHN_CUTOFF_L,chan[i].cutoff&0xff);
+          chWrite(i,SGU1_CHN_CUTOFF_H,chan[i].cutoff>>8);
         }
       }
 
@@ -697,7 +753,7 @@ void DivPlatformSGU::writeControl(int ch) {
     | (chan[ch].control << SGU1_FLAGS0_CONTROL_SHIFT);
   chWrite(ch, SGU1_CHN_FLAGS0, flags0);
 
-  // return;
+  return;
   // Debug: dump channel registers
   logD("SGU ch=%d regs: FREQ=%04X VOL=%02X PAN=%02X FLAGS0=%02X DUTY=%02X CUTOFF=%04X RESON=%02X",
     ch,
@@ -819,7 +875,7 @@ void DivPlatformSGU::applyOpRegs(int ch, int o, const DivInstrumentFM::Operator&
     }
   }
 
-  // return;
+  return;
   logD("SGU op ch=%d op=%d regs: %02X %02X %02X %02X %02X %02X %02X %02X (wave=%d op.ws=%d)",
     ch,
     o,
@@ -1530,9 +1586,30 @@ int DivPlatformSGU::dispatch(DivCommand c) {
       }
       break;
     case DIV_CMD_STD_NOISE_MODE:
-      chan[c.chan].duty=c.value&127;
-      chan[c.chan].virtual_duty=(unsigned short)chan[c.chan].duty << 5;
-      chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
+      if (ins->type==DIV_INS_POKEY) {
+        // POKEY uses this as AUDCTL, not duty
+        unsigned char audctl = c.value;
+        if (audctl & 0x06) {
+          chan[c.chan].control |= 10;  // Enable LP+BP filter
+          // Cutoff at 6th harmonic for organ-like tone
+          chan[c.chan].cutoff = MIN((chan[c.chan].baseFreq * 6) >> 4, 0x3fff);
+          chWrite(c.chan,SGU1_CHN_CUTOFF_L,chan[c.chan].cutoff&0xff);
+          chWrite(c.chan,SGU1_CHN_CUTOFF_H,chan[c.chan].cutoff>>8);
+          chan[c.chan].res = 0;
+          chWrite(c.chan,SGU1_CHN_RESON,chan[c.chan].res);
+          writeControl(c.chan);
+        } else if (chan[c.chan].control & 10) {
+          chan[c.chan].control &= ~10;
+          chan[c.chan].res = 0;
+          chWrite(c.chan,SGU1_CHN_RESON,chan[c.chan].res);
+          writeControl(c.chan);
+        }
+        chan[c.chan].freqChanged=true;  // Trigger freq recalc for bit 0
+      } else {
+        chan[c.chan].duty=c.value&127;
+        chan[c.chan].virtual_duty=(unsigned short)chan[c.chan].duty << 5;
+        chWrite(c.chan,SGU1_CHN_DUTY,chan[c.chan].duty);
+      }
       break;
     case DIV_CMD_FM_AM_DEPTH: {
       switch (ins->type) {
