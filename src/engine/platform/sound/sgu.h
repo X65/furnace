@@ -173,6 +173,14 @@ Additional WAVE form related parameter (per-operator, 3 bits)
     2: taps 0,2,3 (~63 states)
     3: taps 0,2,3,5 (~63 states)
   This is per-operator, allowing different noise timbres in each operator
+- XOR_SINE (SU-style XOR waveform combining)
+  Each WPAR bit enables XORing a waveform into the output:
+    bit 0: Pulse (uses channel duty for width)
+    bit 1: Sine (from waveform LUT)
+    bit 2: Triangle (computed)
+  Examples: WPAR=3 (011) = pulse XOR sine (original SU wave 6)
+            WPAR=5 (101) = pulse XOR triangle (original SU wave 7)
+            WPAR=7 (111) = pulse XOR sine XOR triangle
 
 
 ## MOD / OUT routing
@@ -371,7 +379,7 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 extern "C" {
 #endif
 
-// Waveform types for operator R7[2:0] (0..5 implemented)
+// Waveform types for operator R7[2:0] (all 8 waveforms implemented)
 // - WAVE_NOISE: 32-bit LFSR white noise, SID-compatible clocking (freq16 * 0.9537 Hz)
 // - WAVE_PERIODIC_NOISE: Configurable 6-bit LFSR metallic/tonal noise
 //     Frequency: channel freq16 × operator multiplier (R0[3:0])
@@ -380,6 +388,12 @@ extern "C" {
 //       1: taps 2,3 (~31 states)
 //       2: taps 0,2,3 (~63 states)
 //       3: taps 0,2,3,5 (~63 states)
+// - WAVE_XOR_SINE: SU-style XOR waveform combining
+//     Each WPAR bit enables a waveform: bit0=pulse, bit1=sine, bit2=triangle
+//     WPAR=3: pulse XOR sine, WPAR=5: pulse XOR triangle, WPAR=7: all three
+// - WAVE_SAMPLE: PCM sample playback as FM operator waveform
+//     Uses channel pcmrst register as base address for 1024-sample waveform
+//     Phase (0-1023) indexes into sample region, looping naturally
 typedef enum : uint8_t
 {
     SGU_WAVE_SINE = 0,
@@ -388,7 +402,7 @@ typedef enum : uint8_t
     SGU_WAVE_PULSE = 3,
     SGU_WAVE_NOISE = 4,
     SGU_WAVE_PERIODIC_NOISE = 5,
-    SGU_WAVE_XOR_SINE = 6,     // reserved (unimplemented)
+    SGU_WAVE_XOR_SINE = 6,     // XOR combined waveforms
     SGU_WAVE_SAMPLE = 7,       // sample from PCM memory as waveform
 } sgu_waveform_t;
 

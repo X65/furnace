@@ -121,7 +121,7 @@ static const unsigned char suToSguWaveformMap[8]={
   /* 3: TRIANGLE       -> */ SGU_WAVE_TRIANGLE,
   /* 4: NOISE          -> */ SGU_WAVE_NOISE,
   /* 5: PERIODIC_NOISE -> */ SGU_WAVE_PERIODIC_NOISE,
-  /* 6: XOR_SINE       -> */ SGU_WAVE_SINE,
+  /* 6: XOR_SINE       -> */ SGU_WAVE_XOR_SINE,
   /* 7: SAMPLE         -> */ SGU_WAVE_SAMPLE,
 };
 

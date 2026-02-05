@@ -933,6 +933,35 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                         // Bipolar output spanning full INT16 range
                         sample = (ch_state->lfsr_state[op] & 1) ? 32767 : -32768;
                     break;
+                    case SGU_WAVE_XOR_SINE:
+                    {
+                        // XOR combined waveforms (SU-style waveform combining)
+                        // Each WPAR bit enables XORing a waveform into the output:
+                        //   bit 0: pulse, bit 1: sine, bit 2: triangle
+                        // Examples: WPAR=3 (011) = pulse XOR sine (original SU wave 6)
+                        //           WPAR=5 (101) = pulse XOR triangle (original SU wave 7)
+                        //           WPAR=7 (111) = pulse XOR sine XOR triangle
+                        uint32_t p = phase & 0x3FF;
+                        sample = 0;
+
+                        if (wpar & 0x01) {
+                            // Pulse wave using channel duty
+                            int16_t pulse = ((p >> 3) >= sgu->chan[ch].duty) ? 32767 : -32768;
+                            sample ^= pulse;
+                        }
+                        if (wpar & 0x02) {
+                            // Sine wave from LUT
+                            int16_t sine = sgu->waveform_lut[p & 0x1FF];
+                            sine = (p < 512) ? sine : -sine;
+                            sample ^= sine;
+                        }
+                        if (wpar & 0x04) {
+                            // Triangle wave (symmetric)
+                            int16_t tri = (p < 512) ? ((int32_t)p << 6) - 16384 : 49152 - ((int32_t)p << 6);
+                            sample ^= tri;
+                        }
+                    }
+                    break;
                     case SGU_WAVE_SAMPLE:
                     {
                         // Sample-as-waveform mode: read 8-bit PCM sample from memory
