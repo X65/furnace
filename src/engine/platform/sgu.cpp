@@ -693,6 +693,7 @@ void DivPlatformSGU::writeControl(int ch) {
     | (chan[ch].control << SGU1_FLAGS0_CONTROL_SHIFT);
   chWrite(ch, SGU1_CHN_FLAGS0, flags0);
 
+  return;
   // Debug: dump channel registers
   logD("SGU ch=%d regs: FREQ=%04X VOL=%02X PAN=%02X FLAGS0=%02X DUTY=%02X CUTOFF=%04X RESON=%02X",
     ch,
