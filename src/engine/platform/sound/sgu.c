@@ -791,7 +791,7 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                 // compute the peak position for triangle/sine skew
                 uint8_t wpar = SGU_OP5_WPAR(op_data[5]);
                 uint16_t duty_peak = (uint16_t)(256 + (sgu->chan[ch].duty << 1)) & 0x1FF;
-                uint16_t peak = (wpar & 0x01) ? duty_peak : 256;
+                uint16_t peak = (wpar & SGU_WPAR_SKEW) ? duty_peak : 256;
 
                 //-------------------------------------------------
                 // compute the 14-bit signed amplitude of this operator,
@@ -845,6 +845,12 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
 
                         sample = sgu->waveform_lut[(uint16_t)idx & 0x1FF];
                         sample = idx < 512 ? sample : (int16_t)-sample;
+
+                        // Apply OPL-style wave modifiers (SGU_WPAR_HALF, SGU_WPAR_ABS)
+                        if (wpar & SGU_WPAR_HALF)
+                            sample = (sample < 0) ? 0 : sample;
+                        if (wpar & SGU_WPAR_ABS)
+                            sample = (sample < 0) ? -sample : sample;
                     }
                     break;
                     case SGU_WAVE_TRIANGLE:
@@ -876,6 +882,12 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                             // Width is 'peak'.
                             sample = (int16_t)(-32768 + ((int32_t)(p - trough) * 32767) / (int32_t)peak);
                         }
+
+                        // Apply OPL-style wave modifiers (SGU_WPAR_HALF, SGU_WPAR_ABS)
+                        if (wpar & SGU_WPAR_HALF)
+                            sample = (sample < 0) ? 0 : sample;
+                        if (wpar & SGU_WPAR_ABS)
+                            sample = (sample < 0) ? -sample : sample;
                     }
                     break;
                     case SGU_WAVE_SAWTOOTH:
@@ -933,34 +945,9 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r)
                         // Bipolar output spanning full INT16 range
                         sample = (ch_state->lfsr_state[op] & 1) ? 32767 : -32768;
                     break;
-                    case SGU_WAVE_XOR_SINE:
-                    {
-                        // XOR combined waveforms (SU-style waveform combining)
-                        // Each WPAR bit enables XORing a waveform into the output:
-                        //   bit 0: pulse, bit 1: sine, bit 2: triangle
-                        // Examples: WPAR=3 (011) = pulse XOR sine (original SU wave 6)
-                        //           WPAR=5 (101) = pulse XOR triangle (original SU wave 7)
-                        //           WPAR=7 (111) = pulse XOR sine XOR triangle
-                        uint32_t p = phase & 0x3FF;
+                    case SGU_WAVE_RESERVED6:
+                        // Reserved - outputs silence
                         sample = 0;
-
-                        if (wpar & 0x01) {
-                            // Pulse wave using channel duty
-                            int16_t pulse = ((p >> 3) >= sgu->chan[ch].duty) ? 32767 : -32768;
-                            sample ^= pulse;
-                        }
-                        if (wpar & 0x02) {
-                            // Sine wave from LUT
-                            int16_t sine = sgu->waveform_lut[p & 0x1FF];
-                            sine = (p < 512) ? sine : -sine;
-                            sample ^= sine;
-                        }
-                        if (wpar & 0x04) {
-                            // Triangle wave (symmetric)
-                            int16_t tri = (p < 512) ? ((int32_t)p << 6) - 16384 : 49152 - ((int32_t)p << 6);
-                            sample ^= tri;
-                        }
-                    }
                     break;
                     case SGU_WAVE_SAMPLE:
                     {

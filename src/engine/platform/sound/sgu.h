@@ -165,7 +165,12 @@ Additional WAVE form related parameter (per-operator, 3 bits)
   bit 0 => selects rising/falling (inverted value)
   bits 1..2 => quantize wave table look-up; zero { 0, 4, 6, 8 } last bits
 - SINE, TRIANGLE
-  bit 0 => skew waveform peak position using channel duty value
+  bit 0 (SKEW): skew waveform peak position using channel duty value
+  bit 1 (HALF): half-sine - negative portion silenced
+  bit 2 (ABS): absolute sine - negative portion mirrored
+  Examples: WPAR=2 = half-sine/triangle (positive only)
+            WPAR=4 = absolute sine/triangle (frequency doubled)
+            WPAR=3 = skewed + half
 - PERIODIC_NOISE
   WPAR[1:0] selects 6-bit LFSR tap configuration:
     0: taps 3,4 (~31 states)
@@ -274,6 +279,11 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 #define SGU_OP5_FIX(reg)   ((reg) & SGU_OP5_FIX_BIT)
 #define SGU_OP5_WPAR(reg)  ((reg) & SGU_OP5_WPAR_MASK)
 
+// WPAR bit meanings for SINE/TRIANGLE waveforms (OPL-style modifiers)
+#define SGU_WPAR_SKEW (1 << 0)  // bit 0: skew peak position using channel duty
+#define SGU_WPAR_HALF (1 << 1)  // bit 1: half-sine - negative portion silenced
+#define SGU_WPAR_ABS  (1 << 2)  // bit 2: absolute - negative portion mirrored
+
 // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
 #define SGU_OP6_TL_MSB_BIT 0x01
 #define SGU_OP6_MOD_MASK   0x0E
@@ -380,6 +390,10 @@ extern "C" {
 #endif
 
 // Waveform types for operator R7[2:0] (all 8 waveforms implemented)
+// - WAVE_SINE, WAVE_TRIANGLE: OPL-style wave modifiers via WPAR
+//     bit 0 (SKEW): shift peak position using channel duty
+//     bit 1 (HALF): half-sine - negative portion silenced
+//     bit 2 (ABS): absolute sine - negative portion mirrored
 // - WAVE_NOISE: 32-bit LFSR white noise, SID-compatible clocking (freq16 * 0.9537 Hz)
 // - WAVE_PERIODIC_NOISE: Configurable 6-bit LFSR metallic/tonal noise
 //     Frequency: channel freq16 × operator multiplier (R0[3:0])
@@ -402,7 +416,7 @@ typedef enum : uint8_t
     SGU_WAVE_PULSE = 3,
     SGU_WAVE_NOISE = 4,
     SGU_WAVE_PERIODIC_NOISE = 5,
-    SGU_WAVE_XOR_SINE = 6,     // XOR combined waveforms
+    SGU_WAVE_RESERVED6 = 6,    // reserved for future use
     SGU_WAVE_SAMPLE = 7,       // sample from PCM memory as waveform
 } sgu_waveform_t;
 
