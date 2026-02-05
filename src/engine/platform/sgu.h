@@ -18,7 +18,9 @@
  */
 
 #include "../dispatch.h"
+extern "C" {
 #include "sound/sgu.h"
+}
 
 class DivPlatformSGU: public DivDispatch {
   struct Channel: public SharedChannel<int8_t> {

@@ -20,7 +20,6 @@
 #include "sgu.h"
 #include "../engine.h"
 #include "../../ta-log.h"
-#include "sound/sgu.h"
 #include <utility>
 
 #define rWrite(a,v) if (!skipRegisterWrites) { writes.push(QueuedWrite(a,v)); if (dumpWrites) {addWrite(a,v);} }

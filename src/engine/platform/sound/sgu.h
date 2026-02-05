@@ -209,14 +209,14 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 // -----------------------------------------------------------------------------
 // Operator register offsets (0-7 within each operator's 8-byte block)
 // -----------------------------------------------------------------------------
-#define SGU_OP_REG_MUL      0  // R0: [7]TRM [6]VIB [5]FIX [4]--- [3:0]MUL
-#define SGU_OP_REG_TL       1  // R1: [7:6]KSL [5:0]TL
-#define SGU_OP_REG_AR_DR    2  // R2: [7:4]AR_lo4 [3:0]DR_lo4
-#define SGU_OP_REG_SL_RR    3  // R3: [7:4]SL [3:0]RR
-#define SGU_OP_REG_DT_SR    4  // R4: [7:5]DT [4:0]SR
-#define SGU_OP_REG_DELAY    5  // R5: [7:5]DELAY [4:3]KSR [2:0]WPAR
-#define SGU_OP_REG_MOD      6  // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
-#define SGU_OP_REG_OUT_WAVE 7  // R7: [7:5]OUT [4]AR_msb [3]DR_msb [2:0]WAVE
+#define SGU_OP_REG_MUL      0 // R0: [7]TRM [6]VIB [5]FIX [4]--- [3:0]MUL
+#define SGU_OP_REG_TL       1 // R1: [7:6]KSL [5:0]TL
+#define SGU_OP_REG_AR_DR    2 // R2: [7:4]AR_lo4 [3:0]DR_lo4
+#define SGU_OP_REG_SL_RR    3 // R3: [7:4]SL [3:0]RR
+#define SGU_OP_REG_DT_SR    4 // R4: [7:5]DT [4:0]SR
+#define SGU_OP_REG_DELAY    5 // R5: [7:5]DELAY [4:3]KSR [2:0]WPAR
+#define SGU_OP_REG_MOD      6 // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
+#define SGU_OP_REG_OUT_WAVE 7 // R7: [7:5]OUT [4]AR_msb [3]DR_msb [2:0]WAVE
 
 // -----------------------------------------------------------------------------
 // Operator bitfields
@@ -280,9 +280,9 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 #define SGU_OP5_WPAR(reg)  ((reg) & SGU_OP5_WPAR_MASK)
 
 // WPAR bit meanings for SINE/TRIANGLE waveforms (OPL-style modifiers)
-#define SGU_WPAR_SKEW (1 << 0)  // bit 0: skew peak position using channel duty
-#define SGU_WPAR_HALF (1 << 1)  // bit 1: half-sine - negative portion silenced
-#define SGU_WPAR_ABS  (1 << 2)  // bit 2: absolute - negative portion mirrored
+#define SGU_WPAR_SKEW (1 << 0) // bit 0: skew peak position using channel duty
+#define SGU_WPAR_HALF (1 << 1) // bit 1: half-sine - negative portion silenced
+#define SGU_WPAR_ABS  (1 << 2) // bit 2: absolute - negative portion mirrored
 
 // R6: [7]TRMD [6]VIBD [5]SYNC [4]RING [3:1]MOD [0]TL_msb
 #define SGU_OP6_TL_MSB_BIT 0x01
@@ -385,10 +385,6 @@ Additional WAVE form related parameter (per-operator, 3 bits)
 // - FIX mode ignores channel pitch and derives a fixed frequency from MUL+DT.
 // -----------------------------------------------------------------------------
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 // Waveform types for operator R7[2:0] (all 8 waveforms implemented)
 // - WAVE_SINE, WAVE_TRIANGLE: OPL-style wave modifiers via WPAR
 //     bit 0 (SKEW): shift peak position using channel duty
@@ -416,16 +412,17 @@ typedef enum : uint8_t
     SGU_WAVE_PULSE = 3,
     SGU_WAVE_NOISE = 4,
     SGU_WAVE_PERIODIC_NOISE = 5,
-    SGU_WAVE_RESERVED6 = 6,    // reserved for future use
-    SGU_WAVE_SAMPLE = 7,       // sample from PCM memory as waveform
+    SGU_WAVE_RESERVED6 = 6, // reserved for future use
+    SGU_WAVE_SAMPLE = 7,    // sample from PCM memory as waveform
 } sgu_waveform_t;
 
 // WPAR[1:0] selects 6-bit LFSR tap configuration for PERIODIC_NOISE
-typedef enum : uint8_t {
-    SGU_LFSR_TAP34   = 0,  // taps 3,4 (XOR) - simple periodic
-    SGU_LFSR_TAP23   = 1,  // taps 2,3 (XOR) - simple periodic
-    SGU_LFSR_TAP023  = 2,  // taps 0,2,3 (XOR) - intermediate
-    SGU_LFSR_TAP0235 = 3,  // taps 0,2,3,5 (XOR) - most complex/noisy
+typedef enum : uint8_t
+{
+    SGU_LFSR_TAP34 = 0,   // taps 3,4 (XOR) - simple periodic
+    SGU_LFSR_TAP23 = 1,   // taps 2,3 (XOR) - simple periodic
+    SGU_LFSR_TAP023 = 2,  // taps 0,2,3 (XOR) - intermediate
+    SGU_LFSR_TAP0235 = 3, // taps 0,2,3,5 (XOR) - most complex/noisy
 } sgu_lfsr_t;
 
 // Envelope states
@@ -651,7 +648,3 @@ void SGU_NextSample(struct SGU *sgu, int32_t *l, int32_t *r);
 // Convenience getter: returns mono downmix of current per-channel post-pan samples (averaged).
 // This is not used in NextSample, but useful for taps/meters/debug.
 int32_t SGU_GetSample(struct SGU *sgu, uint8_t ch);
-
-#ifdef __cplusplus
-}
-#endif
