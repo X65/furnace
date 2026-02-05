@@ -474,31 +474,35 @@ void DivPlatformSGU::tick(bool sysTick) {
       // POKEY frequency scaling (from pokey.cpp lines 191-207)
       // Furnace scales POKEY period to make buzz waves brighter/more musical
       if (ins->type==DIV_INS_POKEY) {
-        // unsigned char waveIdx=chan[i].std.wave.val&7;
-        // switch (waveIdx) {
-        //   case 0:
-        //     chan[i].freq=(int)((float)chan[i].freq/5.5f);  // POLY5+POLY17/9: lower pitch
-        //     break;
-        //   case 1:
-        //     chan[i].freq=(int)((float)chan[i].freq/5.8f);  // POLY5 only: lower pitch
-        //     break;
-        //   case 2:
-        //     chan[i].freq=(int)((float)chan[i].freq/36.0f);  // POLY4+POLY5: lower pitch
-        //     break;
-        //   case 3:
-        //     chan[i].freq=(int)((float)chan[i].freq/5.6f);  // POLY5 only: 2 octaves lower
-        //     break;
-        //   case 4:
-        //     chan[i].freq=(int)((float)chan[i].freq/3.0f);  // POLY17/9 only: lower pitch
-        //     break;
-        //   case 6:
-        //     chan[i].freq=(int)((float)chan[i].freq/1.1f);  // ratio: 10/4 = 2.5x
-        //     break;
-        //   case 7:
-        //     // chan[i].freq=chan[i].freq*30/4;  // ratio: 30/4 = 7.5x
-        //     chan[i].freq=(int)((float)chan[i].freq/5.0f);
-        //     break;
-        // }
+        unsigned char waveIdx=chan[i].std.wave.val&7;
+        logI("POKEY wave %d -> SGU WPAR %d", waveIdx, chan[i].wpar[3]);
+        switch (waveIdx) {
+          case 0:
+            chan[i].freq=(int)((float)chan[i].freq/5.5f);  // POLY5+POLY17/9: lower pitch
+            break;
+          case 1:
+            chan[i].freq=(int)((float)chan[i].freq/5.8f);  // POLY5 only: lower pitch
+            break;
+          case 2:
+            chan[i].freq=(int)((float)chan[i].freq/36.0f);  // POLY4+POLY5: lower pitch
+            break;
+          case 3:
+            chan[i].freq=(int)((float)chan[i].freq/5.6f);  // POLY5 only: 2 octaves lower
+            break;
+          case 4:
+            chan[i].freq=(int)((float)chan[i].freq/3.0f);  // POLY17/9 only: lower pitch
+            break;
+          case 6:
+            chan[i].freq=(int)((float)chan[i].freq/1.1f);  // ratio: 10/4 = 2.5x
+            break;
+          case 5:
+            chan[i].freq=(int)((float)chan[i].freq/2.0f);  // ratio: 10/4 = 2.5x
+            break;
+          case 7:
+            // chan[i].freq=chan[i].freq*30/4;  // ratio: 30/4 = 7.5x
+            chan[i].freq=(int)((float)chan[i].freq*1.15f);
+            break;
+        }
       }
 
       if (chan[i].pcm) {
@@ -693,7 +697,7 @@ void DivPlatformSGU::writeControl(int ch) {
     | (chan[ch].control << SGU1_FLAGS0_CONTROL_SHIFT);
   chWrite(ch, SGU1_CHN_FLAGS0, flags0);
 
-  return;
+  // return;
   // Debug: dump channel registers
   logD("SGU ch=%d regs: FREQ=%04X VOL=%02X PAN=%02X FLAGS0=%02X DUTY=%02X CUTOFF=%04X RESON=%02X",
     ch,
