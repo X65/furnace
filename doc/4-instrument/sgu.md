@@ -43,8 +43,10 @@ these apply to each operator:
 - **Key Scale Level (KSL)**: also known as "Level Scale". determines the degree to which the amplitude decreases according to the pitch (0 to 3).
 - **Key Scale Rate (KSR)**: also known as "Rate Scale". determines the degree to which the envelope execution speed increases according to the pitch (0 to 3).
   - SGU-1 has 2-bit KSR (0-3), offering finer control than OPL's 1-bit (0-1).
-- **Frequency Multiplier (MULT)**: sets the coarse pitch offset in relation to the note (0 to 15). the values follow the harmonic scale. 0 is half the base frequency, 1 is the base frequency, 2 is double, and so on.
+- **Frequency Multiplier (MULT)**: sets the coarse pitch ratio in relation to the note (0 to 15).
+  - SGU-1 uses OPL-style multiplier mapping: `0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 12, 12, 15, 15` (`0` = half frequency).
 - **Detune (DT)**: shifts the pitch in fine steps (0 to 7).
+  - SGU-1 detune mapping is: `0=-3`, `1=-2`, `2=-1`, `3=0`, `4=+1`, `5=+2`, `6=+3`, `7=0`.
 - **Waveform Select (WS)**: changes the waveform of the operator (0 to 7). see [waveforms](#waveforms) below.
 - **Waveform Parameter (WPAR)**: per-operator wave shaping parameter (0 to 15). the meaning depends on the selected waveform. see [waveforms](#waveforms) below.
 - **Hard Sync (SYNC)**: when enabled, this operator's phase resets whenever the previous operator's phase wraps around. creates hard-edged, harmonically rich timbres. for operator 1, the previous operator is operator 4.
@@ -129,8 +131,6 @@ for sample settings, see [the Sample instrument editor](sample.md).
 the differences are:
 
 - the presence of a "Use sample" option.
-- the presence of a "**Switch roles of frequency and phase reset timer**" option. when enabled, this writes frequency to the phase reset timer register rather than the frequency register.
-  - this may be used to create sync-like effects.
 
 the hardware sequencer allows automating sweep parameters. the available commands are:
 
@@ -146,17 +146,21 @@ the hardware sequencer allows automating sweep parameters. the available command
 
 these macros allow you to control several parameters of each operator per tick.
 
-most operator parameters listed in the FM section above are available as macros.
+many operator parameters listed in the FM section above are available as macros.
 
 ### operator arpeggio and pitch macros
 
-among the available macros are **Op. Arpeggio** and **Op. Pitch**. these work like the **Arpeggio** and **Pitch** macros featured below, but are applied to the individual operator, overriding the **Arpeggio**/**Pitch** macros respectively.
+among the available macros are **Op. Arpeggio** and **Op. Pitch**.
+
+in the current SGU-1 implementation, these do not stack per operator. for each channel, the first operator (OP1 to OP4) with an active Op. Arpeggio macro is used as the arpeggio source, and the first operator with an active Op. Pitch macro is used as the pitch source.
 
 the **Detune (DT)** FM parameter is still respected when using these macros.
 
 ### fixed frequency macros
 
-when fixed frequency is enabled for an operator, the **Op. Arpeggio** and **Op. Pitch** macros will be replaced by the **Block** and **FreqNum** macros. these can be used to change the operator's fixed frequency over time.
+when fixed frequency is enabled for an operator, the editor currently shows **Block** and **FreqNum** in place of **Op. Arpeggio**/**Op. Pitch**.
+
+however, SGU-1 fixed frequency is derived directly from **MULT** and **DT** (see formula above), and fixed-frequency effect/macro routing is not currently implemented in the SGU backend. use **MULT**/**DT** (or the **Fixed Freq** control) to shape fixed pitch.
 
 ## Macros
 
@@ -171,7 +175,7 @@ when fixed frequency is enabled for an operator, the **Op. Arpeggio** and **Op. 
 - **Resonance**: filter resonance sequence (0 to 255).
   - values that are too high may distort the output!
 - **Filter Control**: filter parameter/ring mod sequence (0 to 15).
-  - **bit 0**: ring modulation with previous channel.
+  - **bit 0**: ring modulation with next channel (wraps from the last channel to channel 1).
   - **bit 1**: low-pass filter. the lower the cutoff, the darker the sound.
   - **bit 2**: high-pass filter. higher cutoff values result in a less "bassy" sound.
   - **bit 3**: band-pass filter. cutoff determines which part of the sound is heard (from bass to treble).

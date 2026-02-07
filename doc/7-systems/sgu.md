@@ -10,7 +10,7 @@ it has the following capabilities:
 - per-operator waveform parameter (WPAR) for wave shaping
 - flexible ESFM-style operator routing (per-operator output and modulation input levels)
 - per-operator hard sync and ring modulation
-- OPN-style 5-phase envelope (AR/DR/SL/SR/RR) with 5-bit attack and decay rates
+- OPN-style ADSR envelope with sustain rate control (AR/DR/SL/SR/RR) and 5-bit attack/decay/sustain rates
 - per-channel resonant filter (low pass, band pass, high pass, ring modulation)
 - 128 pulse widths for pulse waveform
 - volume, frequency and cutoff sweep units (per-channel)
@@ -27,7 +27,7 @@ __note:__ FM operator parameters (attack rate, decay rate, total level, multipli
 - `12xx`: __set pulse width.__ range is `0` to `7F`.
 - `13xx`: __set resonance of filter.__ range is `0` to `FF`.
 - `14xx`: __set filter mode and ring mod.__
-  - bit 0: ring mod
+  - bit 0: ring mod with next channel
   - bit 1: low pass
   - bit 2: high pass
   - bit 3: band pass
