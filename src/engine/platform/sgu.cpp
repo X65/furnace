@@ -617,7 +617,6 @@ void DivPlatformSGU::tick(bool sysTick) {
         writeControl(i);
       }
       chan[i].gate=true;
-      chan[i].phaseReset=true;
       writeControl(i);
       writeControlUpper(i);
       chan[i].keyOn=false;
