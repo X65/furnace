@@ -25,6 +25,7 @@ jobs:
           - { name: 'macOS x86_64', os: macos-14, arch: x86_64 }
           - { name: 'macOS ARM', os: macos-latest, arch: arm64 }
           - { name: 'Linux x86_64', os: ubuntu-22.04, arch: x86_64 }
+          - { name: 'Linux x86_64 AppImage', os: ubuntu-20.04, arch: x86_64, appimage: true }
           #- { name: 'Linux ARM', os: ubuntu-18.04, arch: armhf }
       fail-fast: true
 
@@ -80,6 +81,9 @@ jobs:
         elif [ '${{ runner.os }}' == 'macOS' ]; then
           package_name="${package_name}-macOS-${{ matrix.config.arch }}"
           package_ext=".dmg"
+        elif [ '${{ matrix.config.appimage }}' == 'true' ]; then
+          package_name="${package_name}-Linux-${{ matrix.config.arch }}"
+          package_ext=".AppImage"
         else
           package_name="${package_name}-Linux-${{ matrix.config.arch }}"
           package_ext=".tar.gz"
@@ -289,8 +293,38 @@ jobs:
         mv furnace.dmg ../${{ steps.package-identify.outputs.filename }}
         popd
 
+    - name: Package [Linux AppImage]
+      if: ${{ runner.os == 'Linux' && matrix.config.appimage == true }}
+      run: |
+        sudo apt-get install -y libfuse2
+
+        # Download linuxdeploy and appimagetool
+        wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+        wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+        chmod +x linuxdeploy-x86_64.AppImage appimagetool-x86_64.AppImage
+
+        # Copy icon with the name matching the Icon= entry in the .desktop file
+        cp res/logo.png furnace.png
+
+        # Deploy the binary and its shared library dependencies into AppDir
+        ARCH=x86_64 ./linuxdeploy-x86_64.AppImage \
+          --appdir AppDir \
+          --executable build/furnace \
+          --desktop-file res/furnace.desktop \
+          --icon-file furnace.png
+
+        # Add locale files
+        cp -r po/locale AppDir/usr/share/locale
+
+        # Replace the generated AppRun with our custom script
+        cp res/AppRun AppDir/AppRun
+        chmod +x AppDir/AppRun
+
+        # Create the AppImage
+        ARCH=x86_64 ./appimagetool-x86_64.AppImage AppDir ${{ steps.package-identify.outputs.filename }}
+
     - name: Package [Linux]
-      if: ${{ runner.os == 'Linux' && matrix.config.compiler != 'mingw' }}
+      if: ${{ runner.os == 'Linux' && matrix.config.compiler != 'mingw' && !matrix.config.appimage }}
       run: |
         #if [ '${{ env.BUILD_TYPE }}' == 'Release' ]; then
         #  strip -s build/furnace
